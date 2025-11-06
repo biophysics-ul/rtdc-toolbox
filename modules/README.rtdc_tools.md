@@ -9,7 +9,7 @@ For the usage of these functions, see `rtdc_tools_example_script.py` in the `scr
 
 `extract_features_from_rtdc_to_tsv(rtdc_path,tsv_path)`
 
-This function saves all scalar features from a rtdc file into a tsv file. The rtdc file can be a rtdc file reffering to a basin (e.g., rtdc produced with ChipStream). 
+This function saves all scalar features from a rtdc file into a tsv file. The rtdc file can be a rtdc file reffering to a basin. 
 
 `extract_images_from_rtdc_to_zip(rtdc_path,zip_path)`
 

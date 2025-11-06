@@ -1,4 +1,4 @@
-# DC-tools
+# rtdc-tools
 
 Custom Python tools for Deformability Cytometry (DC).  
 These tools are designed for reusability rather than speed.  
