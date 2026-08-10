@@ -10,13 +10,12 @@ The toolkit is especially useful if you want to develop your own image-based eve
 
 - [1. Repository files](#1-repository-files)
 - [2. Typical classification workflow and output names](#2-typical-classification-workflow-and-output-names)
-- [3. Some additional notes](#3-some-additional-notes)
-- [4. Classifier metadata](#4-classifier-metadata)
-- [5. Main usage](#5-main-usage)
-- [6. Main toolbox functions](#6-main-toolbox-functions)
-- [7. Installation](#7-installation)
-- [8. Notes and citation](#8-notes-and-citation)
-- [9. Author](#9-author)
+- [3. Classifier metadata](#3-classifier-metadata)
+- [4. Main usage](#4-main-usage)
+- [5. Main toolbox functions](#5-main-toolbox-functions)
+- [6. Installation](#6-installation)
+- [7. Citation](#7-citation)
+- [8. Author](#8-author)
 
 ## 1. Repository files
 
@@ -56,13 +55,13 @@ Classification also produces two images that help you inspect the quality of the
 
 - `MySample_dcn_myext_classes.png` — contains example images of events from all classes and helps you visually assess whether the classification is performing as expected.
 
-## 3. Some additional notes
+**Some additional notes**
 
 - Classification information is stored directly in the RT-DC file as additional scalar features. Typically, the class number is stored in `userdef1` and the classification probability in `userdef2`.
 
 - Classified RT-DC files can be analyzed with standard RT-DC software such as Cytoplot. For example, you can filter events using `userdef1` and `userdef2`, or use `userdef1` as the hue to color events by class in scatter plots.
 
-## 4. Classifier metadata
+## 3. Classifier metadata
 
 In addition to the numerical class values stored in the RT-DC file, `rtdc-toolbox` also saves information describing the classifier that produced them. This includes the classifier name, the meaning of the class numbers, and, when available, the classification probabilities.
 
@@ -70,9 +69,9 @@ This information makes it possible for the toolbox and the viewers to recognize 
 
 Class `0` is reserved for events that are not classified. This may include events that were intentionally excluded from classification or events for which classification was not possible.
 
-## 5. Main usage
+## 4. Main usage
 
-### 5.1 View RT-DC images
+### 4.1 View RT-DC images
 
 Run:
 
@@ -91,7 +90,7 @@ The viewer lets you:
 
 A simpler OpenCV-based viewer, `rtdc_image_viewer_openCV.py`, is also included.
 
-### 5.2 Train your own image classifier
+### 4.2 Train your own image classifier
 
 See:
 
@@ -115,7 +114,7 @@ The training set can be stored either as a normal folder or as a ZIP archive.
 
 During training, the toolbox creates model files and several plots that help you evaluate classification performance.
 
-### 5.3 Classify events in RT-DC files
+### 4.3 Classify events in RT-DC files
 
 See:
 
@@ -136,7 +135,7 @@ The script can also exclude events that overlap horizontally with another event 
 
 After classification, the script automatically creates summary plots and example images so that the results can be checked visually.
 
-### 5.4 Classify WBC subtypes with the Kaliman25 method
+### 4.4 Classify WBC subtypes with the Kaliman25 method
 
 See:
 
@@ -153,7 +152,7 @@ It can be used in two ways:
 
 The second option is useful when the image classifier provides a cleaner initial selection of WBCs.
 
-### 5.5 Export images for inspection or training
+### 4.5 Export images for inspection or training
 
 The toolbox can export preprocessed event images from RT-DC files into ZIP archives.
 
@@ -170,7 +169,7 @@ See:
 example_export_random_images_by_class.py
 ```
 
-## 6. Main toolbox functions
+## 5. Main toolbox functions
 
 Most users can work directly from the example scripts without calling individual functions manually. The main functions provided by the toolbox are summarized below.
 
@@ -222,7 +221,7 @@ Creates a plot showing how class percentages and selected RT-DC measurements cha
 
 Creates an image containing representative examples from each predicted class.
 
-## 7. Installation
+## 6. Installation
 
 The toolbox consists mainly of the two modules:
 
@@ -265,7 +264,7 @@ torch         2.7.0+cu126
 torchvision   0.22.0+cu126
 ```
 
-## 8. Notes and citation
+## 7. Citation
 
 `rtdc-toolbox` is based on:
 
@@ -278,7 +277,7 @@ The current implementation was rewritten with substantial assistance from AI and
 
 The original implementation is available in the `legacy` folder.
 
-## 9. Author
+## 8. Author
 
 Jure Derganc  
 Institute of Biophysics, Faculty of Medicine, University of Ljubljana
