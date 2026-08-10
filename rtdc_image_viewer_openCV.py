@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Version 2025 11 25
+Version 2026 08 06
+Framework API: 2.3.2-unified-classifier-api
 @author: Jure Derganc
 Simple RTDC image viewer.
-The images are showed in a N_COLS x N_ROWS grid
+Images are shown in an N_COLS x N_ROWS grid.
 Press Space to toggle showing the contours (if they are available).
-Pressing 0..9 shows only specified class (the class is encoded in CLASS_FEATURE)
-The classes in CLASS_FEAURE should be encoded as integer values (0,1,2,...)
+Pressing 0..9 shows the corresponding available class.
+Class labels are read from classifier metadata and stored as integer values.
 For each image we show:
     <event index - class> (top left) - the class is shown only if CLASS_FEATURE is present
     <event time> (top right)
@@ -22,7 +23,7 @@ import sys
 import numpy as np
 import rtdc_toolbox
 
-# constants that define the appearence
+# Constants controlling appearance.
 N_COLS=5 
 N_ROWS=10
 FONT_SCALE = 0.5  
@@ -30,9 +31,12 @@ FONT_THICKNESS = 1
 BORDER_SIZE=10
 TEXT_POSITION = (BORDER_SIZE , BORDER_SIZE + 10)
 
-# constants that define where to look for class info
-CLASS_FEATURE="userdef1"
-CONFIDENCE_FEATURE="userdef2" 
+# Classifier to display. "default" selects the first metadata entry.
+CLASSIFIER_NAME = "default"
+
+# Legacy defaults used only when the RTDC file has no new classifier metadata.
+CLASS_FEATURE = "userdef1"
+CONFIDENCE_FEATURE = "userdef2"
 
 #########################################################
 def read_and_concatenate(ds,img_table:list,start_idx, n_cols, n_rows,img_width,img_height,border_size):
@@ -54,7 +58,7 @@ def read_and_concatenate(ds,img_table:list,start_idx, n_cols, n_rows,img_width,i
        img=ds["image"][img_table[start_idx+i]].copy()
        img_main_text=str(img_table[start_idx+i])       
        if CLASS_FEATURE in ds: 
-            class_id = ds[CLASS_FEATURE][img_table[start_idx+i]]
+            class_id = int(ds[CLASS_FEATURE][img_table[start_idx+i]])
             class_name = class_name_dict.get(class_id, str(class_id))
             img_main_text = img_main_text + "-" + class_name
        cv2.putText(img, img_main_text, TEXT_POSITION, cv2.FONT_HERSHEY_SIMPLEX,FONT_SCALE, 
@@ -77,7 +81,7 @@ def read_and_concatenate(ds,img_table:list,start_idx, n_cols, n_rows,img_width,i
 
 def filter_events(ds,event_class:int)->list:
     ''' sets a mask for events defined in event_class '''
-    if event_class:
+    if event_class is not None:
         mask = (ds[CLASS_FEATURE][:]==event_class)
         img_table = np.where(mask)[0].tolist()
     else:
@@ -92,9 +96,9 @@ def _set_window_title(ds):
     else:
         title += " Contours not present |"
     if CLASS_FEATURE in ds:
-        title +=  " Class filter: " + ("None" if active_class is None else f" {class_name_dict[active_class]} ")    
+        title += " Class filter: " + ("None" if active_class is None else f" {class_name_dict.get(int(active_class), str(int(active_class)))} ")    
         if 0 in class_list:
-           title += f" (press 0-{len(class_list-1)} to select class, Backspace/Delete to reset) |"
+           title += f" (press 0-{len(class_list)-1} to select class, Backspace/Delete to reset) |"
         else:
            title += f" (press 1-{len(class_list)} to select class, Backspace/Delete reset) |"
     else:
@@ -136,8 +140,26 @@ if not rtdc_path:
     print("No file selected. Exiting...")
     sys.exit()
 
-# get class names if present
-class_name_dict=rtdc_toolbox.get_classes_from_rtdc(rtdc_path)
+# Read the selected classifier's class names and feature locations.
+# Older RTDC files without the new metadata keep the original userdef1/userdef2 behavior.
+try:
+    classifier_info = rtdc_toolbox.get_classifier_metadata(
+        rtdc_path,
+        classifier_name=CLASSIFIER_NAME,
+    )
+    CLASS_FEATURE = classifier_info["class_feature"]
+    probability_feature = classifier_info.get("probability_feature")
+    CONFIDENCE_FEATURE = probability_feature if probability_feature is not None else ""
+    class_name_dict = {
+        int(class_id): str(class_name)
+        for class_id, class_name in classifier_info["class_map"].items()
+    }
+    print("Using classifier:", classifier_info["classifier_name"])
+    print("Class feature:", CLASS_FEATURE)
+    print("Confidence feature:", CONFIDENCE_FEATURE or "None")
+except KeyError:
+    print("No new classifier metadata found; using userdef1/userdef2.")
+    class_name_dict = {}
 
 with dclab.new_dataset(rtdc_path) as ds:
     print("Number of images in RTDC: ",len(ds))
@@ -164,7 +186,7 @@ with dclab.new_dataset(rtdc_path) as ds:
     active_class = None  # None = all events, otherwise an int class label    
     img_table=filter_events(ds,active_class)
     start_idx=0
-    max_idx=max(1,int(len(img_table)/(N_COLS*N_ROWS)))     
+    max_idx=max(0, (len(img_table)-1)//(N_COLS*N_ROWS))     
     
     # Create the main window
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -206,7 +228,7 @@ with dclab.new_dataset(rtdc_path) as ds:
               img_table=filter_events(ds,class_idx)
               active_class = class_idx
             start_idx=0
-            max_idx=max(1,int(len(img_table)/(N_COLS*N_ROWS)))
+            max_idx=max(0, (len(img_table)-1)//(N_COLS*N_ROWS))
             cv2.setTrackbarMax("Image slider", window_name, max_idx)
             cv2.setTrackbarPos("Image slider", window_name, max_idx)
             cv2.setTrackbarPos("Image slider", window_name, start_idx)

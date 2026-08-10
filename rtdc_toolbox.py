@@ -1,23 +1,48 @@
-"""
-rtdc_toolbox (core)
 
-Torch-free utilities for working with RT-DC (.rtdc) files:
-- image export and preprocessing
-- RT-DC stability analysis report
-- WBC classification (Kaliman 2025, scikit-learn based)
-- RTDC metadata helpers + writing new RTDC files with basin reference
+"""Torch-free utilities for RT-DC (.rtdc) files.
 
-ML (PyTorch/torchvision) functionality is implemented in `rtdc_toolbox_ml.py`.
-This core module provides thin wrappers (lazy imports) so existing scripts that
-import ML functions from `rtdc_toolbox` keep working, as long as torch is installed.
+rtdc-toolbox framework version 2.0 (August 2026)
+
+Main public functions
+---------------------
+Image preparation and export
+    get_img_diff
+    preprocess_rtdc_image
+    export_preprocessed_images_from_rtdc_to_zip
+
+Classification and filtering
+    classify_ds_WBC_Kaliman25
+    classify_rtdc_WBC_Kaliman25
+    classify_ds_images_ml          (lazy PyTorch wrapper)
+    classify_rtdc_images_ml        (lazy PyTorch wrapper)
+    make_classifier_mask
+
+Image-model training and loading
+    train_model_on_images          (lazy PyTorch wrapper)
+    load_image_model               (lazy PyTorch wrapper)
+
+Metadata and reporting
+    get_classes_from_rtdc
+    extract_rtdc_classifier_metadata
+    get_classifier_metadata
+    print_rtdc_classifier_metadata
+    export_rtdc_class_stability_report
+    export_rtdc_class_examples
+
+Image-only PyTorch implementations live in ``rtdc_toolbox_ml.py``.  This core
+module remains importable without torch/torchvision and exposes lazy wrappers
+for the image-model functions.
 """
+
 from __future__ import annotations
 
 import os
 import json
+import copy
 import zipfile
+import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import cv2 as cv
@@ -30,6 +55,29 @@ from sklearn.mixture import GaussianMixture
 from sklearn.cluster import KMeans
 
 import dclab
+
+FRAMEWORK_VERSION = "2.0 (August 2026)"
+
+__all__ = [
+    "FRAMEWORK_VERSION",
+    "get_img_diff",
+    "preprocess_rtdc_image",
+    "export_preprocessed_images_from_rtdc_to_zip",
+    "save_features_to_rtdc",
+    "classify_ds_WBC_Kaliman25",
+    "classify_rtdc_WBC_Kaliman25",
+    "classify_ds_images_ml",
+    "classify_rtdc_images_ml",
+    "train_model_on_images",
+    "load_image_model",
+    "get_classes_from_rtdc",
+    "extract_rtdc_classifier_metadata",
+    "get_classifier_metadata",
+    "print_rtdc_classifier_metadata",
+    "make_classifier_mask",
+    "export_rtdc_class_stability_report",
+    "export_rtdc_class_examples",
+]
 
 
 ###########################################################################
@@ -56,7 +104,7 @@ def preprocess_rtdc_image(
     """
     Returns preprocessed image of event event_idx from dataset ds
 
-    The preprocessing in this fucntion comprises:
+    The preprocessing in this function comprises:
       - subtract background with get_img_diff (mean background ~128)
       - crop in x around the event contour
     input and output images are considered to be grayscale uint8
@@ -157,85 +205,148 @@ def preprocess_rtdc_image(
 
 ###########################################################################
 #
-# Nest we define the main toolbox functions
+# Next we define the main toolbox functions
 #
 ###########################################################################
 
-def get_classes_from_rtdc(path_to_rtdc: str) -> Dict[int, str]:
-    """
-    Read class mapping from unified RTDC metadata.
 
-    This toolbox uses a single convention:
-      ds.config["user"][_CLASSIFICATION_META_KEY] is a JSON string/dict with:
-        - "class_map": { "<int_as_str>": "<class_name>", ... }
+
+def get_classes_from_rtdc(path_or_ds: Any) -> Dict[str, Dict[int, str]]:
+    """Return the class map of every classifier registered in an RTDC dataset.
 
     Returns
     -------
-    dict[int, str]
-        Example: {0: "unclassified", 1: "WBC", ...}
-        Returns {} if classification metadata is missing or malformed.
+    dict
+        ``{classifier_name: {class_value: class_name, ...}, ...}`` in metadata
+        insertion order.  An empty dictionary is returned when no classifiers
+        are registered.
     """
-    with dclab.new_dataset(path_to_rtdc) as ds:
-        meta = ds.config.as_dict(pop_filtering=True) or {}
-        user_meta = meta.get("user", {}) if isinstance(meta, dict) else {}
-        _, class_names, _ = _load_classification_meta_from_user(user_meta)
-    return dict(sorted(class_names.items(), key=lambda kv: kv[0]))
+    info = extract_rtdc_classifier_metadata(path_or_ds)
+    return {
+        str(item["classifier_name"]): dict(item["class_map"])
+        for item in info["classifiers"]
+    }
 
-def extract_preprocessed_images_from_rtdc_to_zip(
+def export_preprocessed_images_from_rtdc_to_zip(
     rtdc_path: Union[str, Path],
     zip_path: Union[str, Path] = "export.zip",
-    mask: Optional[Union[np.ndarray, Sequence[bool]]] = None, # export only images in mask (if None, export all images)
-    extra_pixels: int = 15, # extra pixels left/right from the cell to include
-    no_overlap: bool = True, # prevent overlaping with adjacent cells
-    img_ext: str = ".png", # the type of the exported images
-    n: int = 1000, # number of images to export
-    random_images: bool = False # export first n images or n random images
+    mask: Optional[Union[np.ndarray, Sequence[bool]]] = None,
+    extra_pixels: int = 15,
+    no_overlap: bool = True,
+    img_ext: str = ".png",
+    n: int = 1000,
+    random_images: bool = False,
+    saving_mode: str = "overwrite",
 ) -> None:
     """
-    Extract preprocessed images from an .rtdc into a ZIP using OpenCV encoding.
-    - If mask is None: all events are exported.
-    - Else: mask must be a 1/0 or True/False array with length == len(ds).
-    - preprocess_rtdc_image(ds, i, extra_pixels=..., w=...) must exist.
-    - Filenames inside ZIP: "<event><ext>".
+    Export preprocessed event images from an RTDC file into a ZIP archive.
+
+    Parameters
+    ----------
+    rtdc_path:
+        Input RTDC file.
+    zip_path:
+        Output ZIP archive.
+    mask:
+        Optional Boolean mask with one value per event. If None, all events
+        are eligible for export.
+    extra_pixels:
+        Extra pixels included to the left and right of the event contour.
+    no_overlap:
+        If True, preprocessing avoids overlap with neighbouring events.
+    img_ext:
+        Image format used inside the ZIP, e.g. ".png".
+    n:
+        Maximum number of images to export.
+    random_images:
+        If True, randomly select up to ``n`` events. Otherwise export the
+        first ``n`` selected events.
+    saving_mode:
+        How to handle an existing ZIP archive:
+
+        - "overwrite": replace the existing ZIP.
+        - "append": keep the existing ZIP and add the new images.
+
+        In append mode, a new ZIP is created if it does not yet exist.
     """
+    saving_mode = str(saving_mode).strip().lower()
+
+    if saving_mode == "overwrite":
+        zip_mode = "w"
+    elif saving_mode == "append":
+        zip_mode = "a"
+    else:
+        raise ValueError(
+            "saving_mode must be either 'overwrite' or 'append'"
+        )
+
     with dclab.new_dataset(rtdc_path) as ds:
 
         if mask is None:
             idxs = np.arange(len(ds), dtype=int)
         else:
-            mask = np.asarray(mask).astype(bool)
-            if len(mask) != len(ds):
-                print(f"ERROR: mask length {len(mask)} != number of events {len(ds)}")
-                return
+            mask = np.asarray(mask, dtype=bool)
+
+            if mask.shape != (len(ds),):
+                raise ValueError(
+                    f"mask must have shape ({len(ds)},); "
+                    f"got {mask.shape}"
+                )
+
             idxs = np.where(mask)[0].astype(int)
+
             if len(idxs) == 0:
-                print("No events selected (mask contains no True/1 values).")
+                print("No events selected (mask contains no True values).")
                 return
 
         if random_images and len(idxs) > n:
-            idxs = np.asarray(random.sample(list(idxs), k=int(n)), dtype=int)
+            idxs = np.asarray(
+                random.sample(list(idxs), k=int(n)),
+                dtype=int,
+            )
         else:
-            idxs = idxs[: int(n)]
+            idxs = idxs[:int(n)]
 
         ext = img_ext if img_ext.startswith(".") else "." + img_ext
+        base_name = Path(rtdc_path).stem
 
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zipf:
-            print("Extracting images from rtdc to zip.")
+        print(
+            f"Exporting {len(idxs):,} images to ZIP "
+            f"({saving_mode} mode): {zip_path}"
+        )
+
+        n_written = 0
+
+        with zipfile.ZipFile(
+            zip_path,
+            zip_mode,
+            zipfile.ZIP_STORED,
+            allowZip64=True,
+        ) as zipf:
 
             for i in tqdm(idxs):
-                img = preprocess_rtdc_image(ds, int(i), extra_pixels=extra_pixels,no_overlap=no_overlap)
+                img = preprocess_rtdc_image(
+                    ds,
+                    int(i),
+                    extra_pixels=extra_pixels,
+                    no_overlap=no_overlap,
+                )
+
                 if img is None:
                     continue
 
                 ok, buf = cv.imencode(ext, img)
+
                 if not ok:
                     print(f"WARNING: cv.imencode failed for event {i}")
                     continue
 
-                filename = f"{i}{ext}"
+                filename = f"{base_name}-{i}{ext}"
                 zipf.writestr(filename, buf.tobytes())
+                n_written += 1
 
-        print(f"Done. Wrote {len(idxs)} images to: {zip_path}")
+        print(f"Done. Wrote {n_written:,} images to: {zip_path}")
+
 
 def save_features_to_rtdc(
     basin_rtdc_path: str,
@@ -245,29 +356,16 @@ def save_features_to_rtdc(
     overwrite: bool = True,
 ) -> str:
     """
-    Create a new RTDC file at `output_rtdc_path` that points to `basin_rtdc_path` (or its ultimate basin),
-    and stores in it the features from `feature_dict` plus `metadata`.
+    Create a new RTDC file linked to `basin_rtdc_path`, storing the supplied
+    features and metadata.
 
-    Parameters
-    ----------
-    basin_rtdc_path : str
-        Source RTDC to link to.
-    output_rtdc_path : str
-        New RTDC to write.
-    feature_dict : dict
-        {feature_name: np.ndarray} arrays must be length N of the basin dataset.
-    metadata : dict
-        Metadata dict as produced by ds.config.as_dict(pop_filtering=True), with extra user info.
-    overwrite : bool
-        If False and output exists -> raise.
-
-    Returns
-    -------
-    output_rtdc_path : str
+    Classification metadata format 2.0 explicitly records the class and
+    probability feature for every classifier, so this function no longer tries
+    to infer or rewrite a single class feature automatically.
     """
     out_path = str(output_rtdc_path)
     if os.path.exists(out_path) and not overwrite:
-        print(f"[SKIP] file aready exists (you can set overwrite to True): {out_path}", flush=True)
+        print(f"[SKIP] file already exists (you can set overwrite to True): {out_path}", flush=True)
         return out_path
 
     out_dir = os.path.dirname(os.path.abspath(out_path))
@@ -276,35 +374,37 @@ def save_features_to_rtdc(
 
     basin_locs, basin_format = _get_ultimate_basin_locs_and_format(str(basin_rtdc_path))
 
-    # Start from the basin dataset metadata and merge user-provided metadata on top.
     with dclab.new_dataset(basin_rtdc_path) as ds0:
         base_meta = _strip_basin_metadata(ds0.config.as_dict(pop_filtering=True))
         n = len(ds0)
+        inherited_features = set(ds0.features)
 
     incoming_meta = _strip_basin_metadata(metadata if isinstance(metadata, dict) else {})
     meta = _deep_merge_dicts(base_meta, incoming_meta)
 
-    # If the caller provides unified classification metadata, ensure it points to the
-    # integer feature we store class labels into.
-    class_feature_name = _infer_int_class_feature_name(feature_dict)
-    if class_feature_name:
-        _update_classification_meta_class_feature(meta, class_feature_name)
-        meta.setdefault("user", {})
-        # For WBC Kaliman output, also store the feature name explicitly.
-
-    # Validate feature lengths
     for k, v in dict(feature_dict).items():
         arr = np.asarray(v)
         if arr.shape[0] != n:
             raise ValueError(f"Feature '{k}' length {arr.shape[0]} != number of events {n}")
 
-    # First write metadata + features
+    # Detect inconsistent v2 metadata early.
+    registry = _load_classification_registry_from_user(meta.get("user", {}))
+    available_features = inherited_features | {str(k) for k in feature_dict}
+    for entry in registry.get("entries", {}).values():
+        if not isinstance(entry, dict):
+            continue
+        cf = entry.get("class_feature")
+        pf = entry.get("probability_feature")
+        if cf and str(cf) not in available_features:
+            raise KeyError(f"Classification metadata refers to missing class feature '{cf}'")
+        if pf not in (None, "") and str(pf) not in available_features:
+            raise KeyError(f"Classification metadata refers to missing probability feature '{pf}'")
+
     with dclab.RTDCWriter(out_path, mode="reset") as hw:
         hw.store_metadata(meta)
         for k, v in dict(feature_dict).items():
             hw.store_feature(str(k), np.asarray(v))
 
-    # Then attach basin reference to the *ultimate* source file(s)
     with dclab.RTDCWriter(out_path) as hw:
         try:
             hw.store_basin(
@@ -324,90 +424,179 @@ def save_features_to_rtdc(
 
     return out_path
 
-def classify_rtdc_WBC_klmn25(
-    path_to_rtdc: str,
-    class_feature: str = "userdef1",
-    echo: bool = True,
-    overwrite: bool = False,
-    out_ext: str = "_klmn25",
-) -> str:
-    """
-    Classifies RT-DC events according to:
-      Kaliman et al., Biophysical Journal, 2025, DOI: 10.1016/j.bpj.2025.10.007
-      "Automation and improvement of WBC mechanical profiling in deformability cytometry"
 
-    Writes a *new* .rtdc file that:
-      - is linked to the original file via a basin reference ("original")
-      - contains integer class labels stored in `class_feature`
+def _normalize_event_mask(
+    mask: Optional[Union[np.ndarray, Sequence[bool]]],
+    n_events: int,
+) -> np.ndarray:
+    """Return a Boolean event mask with exactly one value per event."""
+    n_events = int(n_events)
+    if mask is None:
+        return np.ones(n_events, dtype=bool)
 
-    Returns
-    -------
-    out_path : str
-        Path to the newly written RTDC file.
-    """
-    # ------------------- Output path -------------------
-    if str(path_to_rtdc).lower().endswith(".rtdc"):
-        out_path = str(path_to_rtdc)[:-5] + str(out_ext) + ".rtdc"
+    mask_array = np.asarray(mask, dtype=bool)
+    if mask_array.shape != (n_events,):
+        raise ValueError(
+            f"mask must have shape ({n_events},); got {mask_array.shape}"
+        )
+    return mask_array
+
+
+def _make_selection_info(
+    mask: Optional[Union[np.ndarray, Sequence[bool]]],
+    normalized_mask: np.ndarray,
+    *,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build the common mask-selection metadata used by all classifiers."""
+    n_total = int(normalized_mask.size)
+    n_selected = int(normalized_mask.sum())
+    return {
+        "mode": "all_events" if mask is None else "boolean_mask",
+        "n_total_events": n_total,
+        "n_selected_events": n_selected,
+        "n_excluded_events": int(n_total - n_selected),
+        "description": None if description in (None, "") else str(description),
+    }
+
+
+def _make_output_rtdc_path(
+    path_to_rtdc: Union[str, Path],
+    output_suffix: str,
+) -> Path:
+    """Return the output RTDC path produced by appending a suffix to the stem."""
+    input_path = Path(path_to_rtdc)
+    suffix = str(output_suffix)
+    if not suffix:
+        raise ValueError("output_suffix must not be empty")
+
+    if input_path.suffix.lower() == ".rtdc":
+        output_path = input_path.with_name(input_path.stem + suffix + ".rtdc")
     else:
-        out_path = str(path_to_rtdc) + str(out_ext) + ".rtdc"
+        output_path = Path(str(input_path) + suffix + ".rtdc")
 
-    if os.path.exists(out_path) and not overwrite:
-        print(f"[SKIP] file aready exists (you can set overwrite to True): {out_path}", flush=True)
-        return out_path
+    if output_path.resolve() == input_path.resolve():
+        raise ValueError("Output RTDC path must differ from the input path")
+    return output_path
 
-    with dclab.new_dataset(path_to_rtdc) as ds:
-        labels, meta = classify_ds_WBC_klmn25(ds, mask=None, echo=echo)
 
-    # Store the classification result in a new RTDC file linked to the input dataset.
+
+
+def classify_rtdc_WBC_Kaliman25(
+    path_to_rtdc: str,
+    *,
+    classifier_name: Optional[str] = None,
+    mask: Optional[Union[np.ndarray, Sequence[bool]]] = None,
+    mask_description: Optional[str] = None,
+    preselected_wbcs: bool = False,
+    output_suffix: str = "_kaliman25",
+    overwrite: bool = False,
+    verbose: bool = True,
+) -> str:
+    """Classify an RTDC file with the Kaliman 2025 WBC classifier.
+
+    The dataset-level classifier performs the classification. This wrapper
+    creates the output path, allocates the next free ``userdefN`` class feature,
+    registers classifier metadata, and writes the basin-linked RTDC file.
+
+    Set ``preselected_wbcs=True`` when ``mask`` already isolates WBCs, for
+    example using an image classifier. In that mode Kaliman Step 1 (the crude
+    area/deformation/area-ratio WBC prefilter) is skipped. Later Kaliman steps
+    are unchanged.
+    """
+    input_path = Path(path_to_rtdc)
+    output_path = _make_output_rtdc_path(input_path, output_suffix)
+
+    if output_path.exists() and not overwrite:
+        if verbose:
+            print(f"[SKIP] File already exists: {output_path}", flush=True)
+        return str(output_path)
+
+    with dclab.new_dataset(str(input_path)) as ds:
+        classes, _, result = classify_ds_WBC_Kaliman25(
+            ds,
+            mask=mask,
+            classifier_name=classifier_name,
+            mask_description=mask_description,
+            preselected_wbcs=preselected_wbcs,
+            verbose=verbose,
+        )
+        metadata = ds.config.as_dict(pop_filtering=True)
+
+    class_feature = _allocate_userdef_features(str(input_path), 1)[0]
+    if verbose:
+        print(
+            f"Classifier '{result['classifier_name']}' will store classes in "
+            f"'{class_feature}'.",
+            flush=True,
+        )
+        print(f"Writing classified RTDC file: {output_path}", flush=True)
+
+    metadata = _register_classifier_metadata(
+        metadata,
+        class_feature=class_feature,
+        probability_feature=None,
+        class_map=result["class_map"],
+        classifier=result["classifier"],
+    )
     save_features_to_rtdc(
-        basin_rtdc_path=str(path_to_rtdc),
-        output_rtdc_path=str(out_path),
-        feature_dict={str(class_feature): labels},
-        metadata=meta,
+        basin_rtdc_path=str(input_path),
+        output_rtdc_path=str(output_path),
+        feature_dict={class_feature: classes},
+        metadata=metadata,
         overwrite=True,
     )
 
-    return out_path
+    if verbose:
+        print(f"Finished: {output_path}", flush=True)
+    return str(output_path)
 
 
 
-def classify_ds_WBC_klmn25(
-    ds,
-    mask: Optional[np.ndarray] = None,
+
+
+def classify_ds_WBC_Kaliman25(
+    ds: Any,
+    mask: Optional[Union[np.ndarray, Sequence[bool]]] = None,
     *,
-    echo: bool = True,
-) -> Tuple[np.ndarray, dict]:
+    classifier_name: Optional[str] = None,
+    mask_description: Optional[str] = None,
+    preselected_wbcs: bool = False,
+    verbose: bool = True,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+    """Classify selected events in an open dataset using Kaliman 2025.
+
+    Events outside ``mask`` remain class 0. The function does not allocate RTDC
+    features, register metadata, or write files.
+
+    Parameters
+    ----------
+    preselected_wbcs:
+        If False (default), apply the original Kaliman Step 1 crude WBC
+        prefilter based on area, deformation, and area ratio. If True, ``mask``
+        is assumed to already contain WBCs and Step 1 is skipped. A mask is
+        required in this mode. All later Kaliman steps are unchanged.
+
+    Returns
+    -------
+    classes, probabilities, result
+        ``classes`` is a full-length ``uint8`` array. ``probabilities`` is
+        ``None`` because this classifier does not produce confidence values.
+        ``result`` contains the class map and classifier metadata.
     """
-    Kaliman 2025 WBC classification on an already-open dataset `ds`,
-    optionally only for events where `mask == True`.
-
-    Returns:
-        labels (np.uint8, len N),
-        meta   (dict) metadata describing the classifier and class names
-
-    Notes:
-      - Events outside `mask` are set to class=0 ("unclassified").
-      - If mask is None, all events are classified.
-    """
-
-    # Step 1 thresholds
-    AREA_um_MIN = 30.0
-    AREA_um_MAX = 100.0
+    # Classification thresholds and random seed.
+    AREA_UM_MIN = 30.0
+    AREA_UM_MAX = 100.0
     DEFORM_MAX = 0.12
     AREA_RATIO_MAX = 1.10
-
-    # Step 2b brightness p90 window
     BRIGHT_P90_MIN = -10.0
     BRIGHT_P90_MAX = 15.0
-
-    # Step 2c deformation window
     DEFORM_RAW_MIN = 0.06
     DEFORM_RAW_MAX = 0.26
-
     TEX_CONTRAST_MAX = 250.0
-    RND_SEED = 42
+    RANDOM_SEED = 42
 
-    DC_EVENT_CLASSES = {
+    class_values = {
         "unclassified": 0,
         "lymphocytes": 21,
         "neutrophils": 22,
@@ -418,35 +607,67 @@ def classify_ds_WBC_klmn25(
         "step4_discarded": 94,
         "step6_discarded": 96,
     }
+    class_map = {int(value): str(name) for name, value in class_values.items()}
 
-    N = len(ds)
-    if mask is None:
-        mask_arr = np.ones(N, dtype=bool)
-    else:
-        mask_arr = np.asarray(mask, dtype=bool)
-        if mask_arr.shape[0] != N:
-            raise ValueError(f"mask length {mask_arr.shape[0]} != number of events {N}")
+    resolved_name = str(classifier_name or "WBC_Kaliman25").strip()
+    if not resolved_name:
+        raise ValueError("classifier_name must not be empty")
 
-    labels = np.zeros(N, dtype=np.uint8)
-
-    if echo:
-        print(f"Total events: {N:,}", flush=True)
-        if mask is not None:
-            print(f"Mask True events: {int(mask_arr.sum()):,}", flush=True)
-
-    if not np.any(mask_arr):
-        meta = ds.config.as_dict(pop_filtering=True)
-        meta.setdefault("user", {})
-        inv = {0: "unclassified"}
-        meta["user"][_CLASSIFICATION_META_KEY] = _make_classification_meta_json(
-            class_feature="",
-            class_map=inv,
-            classifier={"name": "Kaliman2025"},
+    if preselected_wbcs and mask is None:
+        raise ValueError(
+            "preselected_wbcs=True requires a mask containing preselected WBC events"
         )
-        return labels, meta
 
-    # Pull features (full arrays)
-    required = [
+    n_events = len(ds)
+    requested_mask = _normalize_event_mask(mask, n_events)
+    selection_info = _make_selection_info(
+        mask,
+        requested_mask,
+        description=mask_description,
+    )
+    classes = np.zeros(n_events, dtype=np.uint8)
+
+    if verbose:
+        print(f"Total events: {n_events:,}", flush=True)
+        if mask is not None:
+            print(
+                f"Events selected by mask: {selection_info['n_selected_events']:,}",
+                flush=True,
+            )
+            print(
+                f"Events excluded by mask: {selection_info['n_excluded_events']:,}",
+                flush=True,
+            )
+
+    processing_info = {
+        "n_total_events": int(n_events),
+        "n_requested_events": int(requested_mask.sum()),
+        "n_processed_events": int(requested_mask.sum()),
+        "n_excluded_by_mask": int(n_events - requested_mask.sum()),
+        "n_failed_events": 0,
+    }
+    classifier_info = {
+        "name": resolved_name,
+        "method": "Kaliman25",
+        "model_type": "rules_and_clustering",
+        "input_modality": "event_features",
+        "publication": "Kaliman et al., Biophysical Journal, 2025",
+        "metadata_version": CLASSIFICATION_METADATA_VERSION,
+        "preselected_wbcs": bool(preselected_wbcs),
+        "selection": selection_info,
+        "processing": processing_info,
+    }
+    result = {
+        "classifier_name": resolved_name,
+        "class_map": class_map,
+        "classifier": classifier_info,
+    }
+
+    if not np.any(requested_mask):
+        return classes, None, result
+
+    # Load all features used by the classifier.
+    required_features = [
         "area_um",
         "area_um_raw",
         "area_ratio",
@@ -460,217 +681,238 @@ def classify_ds_WBC_klmn25(
         "tex_idm_ptp",
         "tex_den_ptp",
     ]
-    missing = [f for f in required if f not in ds.features]
-    if missing:
+    missing_features = [
+        feature for feature in required_features if feature not in ds.features
+    ]
+    if missing_features:
         raise KeyError(
-            "Kaliman 2025 WBC classifier requires these missing features in the RTDC file: "
-            + ", ".join(missing)
+            "Kaliman 2025 WBC classifier requires these missing features: "
+            + ", ".join(missing_features)
         )
 
-    area_um = ds["area_um"][:]
-    area_um_raw = ds["area_um_raw"][:]
-    area_ratio = ds["area_ratio"][:]
-    deform = ds["deform"][:]
-    deform_raw = ds["deform_raw"][:]
-    bright_p90 = ds["bright_perc_90"][:]
-    bright_avg = ds["bright_avg"][:]
-    tex_con_avg = ds["tex_con_avg"][:]
-    tex_den_avg = ds["tex_den_avg"][:]
-    tex_sva_avg = ds["tex_sva_avg"][:]
-    tex_idm_ptp = ds["tex_idm_ptp"][:]
-    tex_den_ptp = ds["tex_den_ptp"][:]
+    area_um = np.asarray(ds["area_um"][:])
+    area_um_raw = np.asarray(ds["area_um_raw"][:])
+    area_ratio = np.asarray(ds["area_ratio"][:])
+    deform = np.asarray(ds["deform"][:])
+    deform_raw = np.asarray(ds["deform_raw"][:])
+    bright_p90 = np.asarray(ds["bright_perc_90"][:])
+    bright_avg = np.asarray(ds["bright_avg"][:])
+    tex_con_avg = np.asarray(ds["tex_con_avg"][:])
+    tex_den_avg = np.asarray(ds["tex_den_avg"][:])
+    tex_sva_avg = np.asarray(ds["tex_sva_avg"][:])
+    tex_idm_ptp = np.asarray(ds["tex_idm_ptp"][:])
+    tex_den_ptp = np.asarray(ds["tex_den_ptp"][:])
 
-    # Build local-to-global mapping; we will compute boolean masks full-length but only for selected events
-    sel = mask_arr  # alias
+    labels = np.zeros(n_events, dtype=np.int32)
 
-    # Initialize inside-mask labels as Kaliman unclassified (0)
-    labels_in = np.full(N, DC_EVENT_CLASSES["unclassified"], dtype=np.int32)
-
-    # STEP 1
-    crude_wbcs = sel & (
-        (area_um >= AREA_um_MIN) &
-        (area_um <= AREA_um_MAX) &
-        (deform <= DEFORM_MAX) &
-        (area_ratio <= AREA_RATIO_MAX)
-    )
-    step1_discarded = sel & (~crude_wbcs)
-    labels_in[step1_discarded] = DC_EVENT_CLASSES["step1_discarded"]
-    if echo:
-        print(f"Step 1 kept: {int(crude_wbcs.sum()):,} (discarded: {int(step1_discarded.sum()):,})", flush=True)
-
-    # STEP 2a
-    base2 = crude_wbcs
-    idx2 = np.flatnonzero(base2)
-    if idx2.size >= 2:
-        data2a = np.column_stack((tex_idm_ptp[base2], tex_den_ptp[base2]))
-        gmm2a = GaussianMixture(n_components=2, random_state=RND_SEED).fit(data2a)
-        pred2a = gmm2a.predict(data2a)
-        centers2a = gmm2a.means_
-        norm2 = np.sum(centers2a ** 2, axis=1)
-        rbc_cluster = int(np.argmax(norm2))
-        wbc_cluster = 1 - rbc_cluster
-
-        wbc_step2a = np.zeros(N, dtype=bool)
-        wbc_step2a[idx2] = (pred2a == wbc_cluster)
-    elif idx2.size == 1:
-        # Too few events for a 2-component GMM: keep the single event.
-        wbc_step2a = base2.copy()
+    # Step 1: Select crude WBC candidates, unless WBCs were preselected upstream.
+    if preselected_wbcs:
+        crude_wbcs = requested_mask.copy()
+        step1_discarded = np.zeros(n_events, dtype=bool)
+        if verbose:
+            print(
+                f"Step 1 skipped: using {int(crude_wbcs.sum()):,} "
+                "preselected WBC events from mask.",
+                flush=True,
+            )
     else:
-        wbc_step2a = np.zeros(N, dtype=bool)
+        crude_wbcs = requested_mask & (
+            (area_um >= AREA_UM_MIN)
+            & (area_um <= AREA_UM_MAX)
+            & (deform <= DEFORM_MAX)
+            & (area_ratio <= AREA_RATIO_MAX)
+        )
+        step1_discarded = requested_mask & ~crude_wbcs
+        labels[step1_discarded] = class_values["step1_discarded"]
+        if verbose:
+            print(
+                f"Step 1 kept: {int(crude_wbcs.sum()):,} "
+                f"(discarded: {int(step1_discarded.sum()):,})",
+                flush=True,
+            )
 
-    if echo:
-        print(f"Step 2a (GMM) kept: {int(wbc_step2a.sum()):,}")
+    # Step 2a: Remove RBC-like events with a two-component GMM.
+    step2_base = crude_wbcs
+    step2_indices = np.flatnonzero(step2_base)
+    if step2_indices.size >= 2:
+        step2_data = np.column_stack(
+            (tex_idm_ptp[step2_base], tex_den_ptp[step2_base])
+        )
+        step2_model = GaussianMixture(
+            n_components=2,
+            random_state=RANDOM_SEED,
+        ).fit(step2_data)
+        step2_prediction = step2_model.predict(step2_data)
+        rbc_cluster = int(np.argmax(np.sum(step2_model.means_ ** 2, axis=1)))
+        wbc_cluster = 1 - rbc_cluster
+        step2a_wbcs = np.zeros(n_events, dtype=bool)
+        step2a_wbcs[step2_indices] = step2_prediction == wbc_cluster
+    elif step2_indices.size == 1:
+        step2a_wbcs = step2_base.copy()
+    else:
+        step2a_wbcs = np.zeros(n_events, dtype=bool)
+    if verbose:
+        print(f"Step 2a kept: {int(step2a_wbcs.sum()):,}", flush=True)
 
-    # STEP 2b
-    wbc_step2b = wbc_step2a & (bright_p90 >= BRIGHT_P90_MIN) & (bright_p90 <= BRIGHT_P90_MAX)
-    if echo:
-        print(f"Step 2b (brightness p90) kept: {int(wbc_step2b.sum()):,}")
-
-    # STEP 2c
-    wbcs = wbc_step2b & (deform_raw >= DEFORM_RAW_MIN) & (deform_raw <= DEFORM_RAW_MAX)
-    if echo:
-        print(f"Step 2c (deformation raw) kept: {int(wbcs.sum()):,}")
-
-    step2_discarded = base2 & (~wbcs)
-    labels_in[step2_discarded] = DC_EVENT_CLASSES["step2_discarded"]
-    if echo:
-        print(f"Step 2 kept: {int(wbcs.sum()):,} (discarded: {int(step2_discarded.sum()):,})")
-
-    # STEP 3
-    base3 = wbcs
-    idx3 = np.flatnonzero(base3)
-    crude_lymphos = np.zeros(N, dtype=bool)
-    if idx3.size >= 2:
-        data3 = np.column_stack((area_um[base3], area_um_raw[base3]))
-        km3 = KMeans(n_clusters=2, random_state=RND_SEED, n_init="auto")
-        pred3 = km3.fit_predict(data3)
-        centers3 = km3.cluster_centers_
-        crude_lymph_cluster = int(np.argmin(centers3.mean(axis=1)))
-        crude_lymphos[idx3] = (pred3 == crude_lymph_cluster)
-    elif idx3.size == 1:
-        # Only one event: cannot split into two clusters; assign to lymph branch.
-        crude_lymphos[idx3[0]] = True
-    granulos_monos = base3 & (~crude_lymphos)
-
-    if echo:
-        print(f"Step 3 Crude Lymphos: {int(crude_lymphos.sum()):,}")
-        print(f"Step 3 Granulos+Monos: {int(granulos_monos.sum()):,}")
-
-    # STEP 4
-    base4a = crude_lymphos
-    step4a_accepted = base4a & (tex_con_avg <= TEX_CONTRAST_MAX)
-
-    clean_lymphos = np.zeros(N, dtype=bool)
-    idx4 = np.flatnonzero(step4a_accepted)
-    if idx4.size >= 2:
-        data4 = np.column_stack((bright_avg[step4a_accepted], tex_con_avg[step4a_accepted]))
-        gmm4 = GaussianMixture(n_components=2, random_state=RND_SEED).fit(data4)
-        pred4 = gmm4.predict(data4)
-        centers4 = gmm4.means_
-        clean_lymph_cluster = int(np.argmax(centers4[:, 0]))
-        clean_lymphos[idx4] = (pred4 == clean_lymph_cluster)
-    elif idx4.size == 1:
-        # Too few events for a 2-component GMM: accept the single event.
-        clean_lymphos[idx4[0]] = True
-    lymphocytes = clean_lymphos
-    labels_in[lymphocytes] = DC_EVENT_CLASSES["lymphocytes"]
-
-    step4_discarded = base4a & (~lymphocytes)
-    labels_in[step4_discarded] = DC_EVENT_CLASSES["step4_discarded"]
-    if echo:
-        print(f"Step 4: Lymphocytes: {int(lymphocytes.sum()):,} (discarded: {int(step4_discarded.sum()):,})")
-
-    # STEP 5
-    base5 = granulos_monos
-    idx5 = np.flatnonzero(base5)
-    neutrophils = np.zeros(N, dtype=bool)
-    if idx5.size >= 3:
-        data5 = np.column_stack((bright_avg[base5], tex_den_avg[base5], tex_sva_avg[base5]))
-        gmm5 = GaussianMixture(n_components=3, random_state=RND_SEED).fit(data5)
-        pred5 = gmm5.predict(data5)
-        counts5 = np.bincount(pred5, minlength=3)
-        neut_cluster = int(np.argmax(counts5))
-        neutrophils[idx5] = (pred5 == neut_cluster)
-    elif idx5.size > 0:
-        # Too few events for a 3-component GMM: assign all to neutrophils.
-        neutrophils[idx5] = True
-    labels_in[neutrophils] = DC_EVENT_CLASSES["neutrophils"]
-    monos_eos = base5 & (~neutrophils)
-
-    if echo:
-        print(f"Step 5: Neutrophils: {int(neutrophils.sum()):,}")
-        print(f"Step 5: Remaining (Monos+Eos candidates): {int(monos_eos.sum()):,}")
-
-    # STEP 6
-    base6 = monos_eos
-    monocytes = np.zeros(N, dtype=bool)
-    eosinophils = np.zeros(N, dtype=bool)
-
-    if neutrophils.any():
-        neut_tex_den = tex_den_avg[neutrophils]
-        neut_max = float(np.max(neut_tex_den))
-        neut_min = float(np.min(neut_tex_den))
-        eosinophils = base6 & (tex_den_avg > neut_max)
-        monocytes = base6 & (tex_den_avg < neut_min)
-
-    labels_in[monocytes] = DC_EVENT_CLASSES["monocytes"]
-    labels_in[eosinophils] = DC_EVENT_CLASSES["eosinophils"]
-
-    step6_discarded = base6 & (~monocytes) & (~eosinophils)
-    labels_in[step6_discarded] = DC_EVENT_CLASSES["step6_discarded"]
-
-    if echo:
-        print(f"Step 6: Monocytes: {int(monocytes.sum()):,}")
-        print(f"Step 6: Eosinophils: {int(eosinophils.sum()):,}")
-        print(f"Step 6: Discarded: {int(step6_discarded.sum()):,}")
-
-    # merge into output labels
-    labels[mask_arr] = labels_in[mask_arr]
-
-    # metadata
-    meta = ds.config.as_dict(pop_filtering=True)
-    meta.setdefault("user", {})
-
-    inv = {int(v): str(k) for k, v in DC_EVENT_CLASSES.items()}
-    inv[0] = "unclassified"
-    meta["user"][_CLASSIFICATION_META_KEY] = _make_classification_meta_json(
-        class_feature="",
-        class_map=inv,
-        classifier={"name": "Kaliman2025"},
+    # Step 2b: Apply the brightness-percentile window.
+    step2b_wbcs = (
+        step2a_wbcs
+        & (bright_p90 >= BRIGHT_P90_MIN)
+        & (bright_p90 <= BRIGHT_P90_MAX)
     )
+    if verbose:
+        print(f"Step 2b kept: {int(step2b_wbcs.sum()):,}", flush=True)
 
-    return labels, meta
+    # Step 2c: Apply the raw-deformation window.
+    wbcs = (
+        step2b_wbcs
+        & (deform_raw >= DEFORM_RAW_MIN)
+        & (deform_raw <= DEFORM_RAW_MAX)
+    )
+    step2_discarded = step2_base & ~wbcs
+    labels[step2_discarded] = class_values["step2_discarded"]
+    if verbose:
+        print(
+            f"Step 2 kept: {int(wbcs.sum()):,} "
+            f"(discarded: {int(step2_discarded.sum()):,})",
+            flush=True,
+        )
+
+    # Step 3: Split crude lymphocytes from granulocyte/monocyte candidates.
+    step3_indices = np.flatnonzero(wbcs)
+    crude_lymphocytes = np.zeros(n_events, dtype=bool)
+    if step3_indices.size >= 2:
+        step3_data = np.column_stack((area_um[wbcs], area_um_raw[wbcs]))
+        step3_model = KMeans(
+            n_clusters=2,
+            random_state=RANDOM_SEED,
+            n_init="auto",
+        )
+        step3_prediction = step3_model.fit_predict(step3_data)
+        lymphocyte_cluster = int(np.argmin(step3_model.cluster_centers_.mean(axis=1)))
+        crude_lymphocytes[step3_indices] = step3_prediction == lymphocyte_cluster
+    elif step3_indices.size == 1:
+        crude_lymphocytes[step3_indices[0]] = True
+    granulocyte_monocyte_candidates = wbcs & ~crude_lymphocytes
+    if verbose:
+        print(
+            f"Step 3 crude lymphocytes: {int(crude_lymphocytes.sum()):,}",
+            flush=True,
+        )
+        print(
+            "Step 3 granulocyte/monocyte candidates: "
+            f"{int(granulocyte_monocyte_candidates.sum()):,}",
+            flush=True,
+        )
+
+    # Step 4: Clean the lymphocyte branch.
+    step4_candidates = crude_lymphocytes & (tex_con_avg <= TEX_CONTRAST_MAX)
+    step4_indices = np.flatnonzero(step4_candidates)
+    lymphocytes = np.zeros(n_events, dtype=bool)
+    if step4_indices.size >= 2:
+        step4_data = np.column_stack(
+            (bright_avg[step4_candidates], tex_con_avg[step4_candidates])
+        )
+        step4_model = GaussianMixture(
+            n_components=2,
+            random_state=RANDOM_SEED,
+        ).fit(step4_data)
+        step4_prediction = step4_model.predict(step4_data)
+        lymphocyte_cluster = int(np.argmax(step4_model.means_[:, 0]))
+        lymphocytes[step4_indices] = step4_prediction == lymphocyte_cluster
+    elif step4_indices.size == 1:
+        lymphocytes[step4_indices[0]] = True
+    labels[lymphocytes] = class_values["lymphocytes"]
+    step4_discarded = crude_lymphocytes & ~lymphocytes
+    labels[step4_discarded] = class_values["step4_discarded"]
+    if verbose:
+        print(
+            f"Step 4 lymphocytes: {int(lymphocytes.sum()):,} "
+            f"(discarded: {int(step4_discarded.sum()):,})",
+            flush=True,
+        )
+
+    # Step 5: Identify neutrophils as the largest of three clusters.
+    step5_indices = np.flatnonzero(granulocyte_monocyte_candidates)
+    neutrophils = np.zeros(n_events, dtype=bool)
+    if step5_indices.size >= 3:
+        step5_data = np.column_stack(
+            (
+                bright_avg[granulocyte_monocyte_candidates],
+                tex_den_avg[granulocyte_monocyte_candidates],
+                tex_sva_avg[granulocyte_monocyte_candidates],
+            )
+        )
+        step5_model = GaussianMixture(
+            n_components=3,
+            random_state=RANDOM_SEED,
+        ).fit(step5_data)
+        step5_prediction = step5_model.predict(step5_data)
+        cluster_counts = np.bincount(step5_prediction, minlength=3)
+        neutrophil_cluster = int(np.argmax(cluster_counts))
+        neutrophils[step5_indices] = step5_prediction == neutrophil_cluster
+    elif step5_indices.size > 0:
+        neutrophils[step5_indices] = True
+    labels[neutrophils] = class_values["neutrophils"]
+    monocyte_eosinophil_candidates = granulocyte_monocyte_candidates & ~neutrophils
+    if verbose:
+        print(f"Step 5 neutrophils: {int(neutrophils.sum()):,}", flush=True)
+        print(
+            "Step 5 monocyte/eosinophil candidates: "
+            f"{int(monocyte_eosinophil_candidates.sum()):,}",
+            flush=True,
+        )
+
+    # Step 6: Separate monocytes and eosinophils by neutrophil texture range.
+    monocytes = np.zeros(n_events, dtype=bool)
+    eosinophils = np.zeros(n_events, dtype=bool)
+    if neutrophils.any():
+        neutrophil_texture = tex_den_avg[neutrophils]
+        eosinophils = monocyte_eosinophil_candidates & (
+            tex_den_avg > float(np.max(neutrophil_texture))
+        )
+        monocytes = monocyte_eosinophil_candidates & (
+            tex_den_avg < float(np.min(neutrophil_texture))
+        )
+    labels[monocytes] = class_values["monocytes"]
+    labels[eosinophils] = class_values["eosinophils"]
+    step6_discarded = (
+        monocyte_eosinophil_candidates & ~monocytes & ~eosinophils
+    )
+    labels[step6_discarded] = class_values["step6_discarded"]
+    if verbose:
+        print(f"Step 6 monocytes: {int(monocytes.sum()):,}", flush=True)
+        print(f"Step 6 eosinophils: {int(eosinophils.sum()):,}", flush=True)
+        print(f"Step 6 discarded: {int(step6_discarded.sum()):,}", flush=True)
+
+    classes[requested_mask] = labels[requested_mask].astype(np.uint8, copy=False)
+    return classes, None, result
 
 
-def analyze_rtdc(
+
+
+def export_rtdc_class_stability_report(
     path_to_rtdc: Union[str, Path],
-    class_feature: Optional[str] = "userdef1",
+    classifier_name: Optional[str] = "default",
     features_to_plot: Sequence[str] = ("area_um", "deform"),
     n_window: int = 10000,
     step: int = 1000,
     out_png: Optional[Union[str, Path]] = None,
 ) -> Optional[Path]:
-
     """
-    Analyze ONE RTDC file and save a PNG report in the same folder.
-    The report comprises plots of N(t), deform(t) ... for classes defined in metadata
-    If class_feature is None it plots data for the whole dataset
+    Analyze one RTDC file and save a PNG stability report.
 
-    Returns:
-        Path to PNG (Path) on success, or None if input file missing / failed.
+    ``classifier_name="default"`` selects the first metadata entry. Pass a
+    concrete classifier name to select it explicitly, or ``None`` to analyze
+    all events as one group.
     """
     rtdc_path = Path(path_to_rtdc)
     if not rtdc_path.exists():
         print(f"[SKIP] RTDC not found: {rtdc_path}")
         return None
 
-    features_to_plot = list(features_to_plot) 
-
-    # output name: default "<stem>.png" (e.g. xxx.rtdc -> xxx.png)
+    features_to_plot = list(features_to_plot)
     out_png = Path(out_png) if out_png is not None else rtdc_path.with_suffix(".png")
-
-    # Read class names from RTDC metadata first (opens+closes file for clarity).
-    class_names = get_classes_from_rtdc(str(rtdc_path))
 
     def get_time(ds):
         return np.asarray(ds["time"], float) if "time" in ds.features else np.arange(len(ds), dtype=float)
@@ -689,52 +931,58 @@ def analyze_rtdc(
 
     with dclab.new_dataset(rtdc_path) as ds:
         t = get_time(ds)
-
-
         n_total_events = len(ds)
 
-        # classes
-        if class_feature is None:
+        if classifier_name is None:
             cls = np.zeros(len(ds), dtype=int)
             local_names = {0: "All events"}
+            class_feature = None
         else:
+            cinfo = get_classifier_metadata(ds, classifier_name)
+            resolved_classifier_name = cinfo["classifier_name"]
+            class_feature = cinfo["class_feature"]
             if class_feature not in ds.features:
-                print(f"[SKIP] {rtdc_path.name}: class_feature '{class_feature}' not found")
+                print(f"[SKIP] {rtdc_path.name}: class feature '{class_feature}' not found")
                 return None
             cls = np.asarray(ds[class_feature], dtype=int)
-            local_names = class_names
+            local_names = cinfo["class_map"]
 
         if len(cls) == 0:
             print(f"[SKIP] {rtdc_path.name}: no events")
             return None
 
-        # feature arrays (missing -> NaN)
-        feat_arr = {}
-        for f in features_to_plot:
-            feat_arr[f] = np.asarray(ds[f], float) if f in ds.features else np.full(len(cls), np.nan, float)
+        feat_arr = {
+            f: np.asarray(ds[f], float) if f in ds.features else np.full(len(cls), np.nan, float)
+            for f in features_to_plot
+        }
 
         win = slices(len(cls), n_window, step)
         t_centers = np.array([np.nanmean(t[s]) for s in win], float)
-
         classes = np.unique(cls)
         n_rows = len(classes)
         n_cols = 1 + len(features_to_plot)
 
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.8 * n_cols, max(2.5, 1.9 * n_rows)), sharex=True)
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(4.8 * n_cols, max(2.5, 1.9 * n_rows)),
+            sharex=True,
+        )
         if n_rows == 1:
             axes = np.array([axes])
 
         for ri, c in enumerate(classes):
             cname = local_names.get(int(c), str(int(c)))
 
-            # --- Column 0: percent
             ax = axes[ri, 0]
             y = np.array([100.0 * np.mean(cls[s] == c) for s in win], float)
             overall = 100.0 * np.mean(cls == c)
             ax.axhline(overall, color="red", lw=1, alpha=0.8)
-            ax.text(0.98, 0.98, f"avg={overall:.2f}%", transform=ax.transAxes,
-                    ha="right", va="top", color="red", fontsize=8,
-                    bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.7))
+            ax.text(
+                0.98, 0.98, f"avg={overall:.2f}%", transform=ax.transAxes,
+                ha="right", va="top", color="red", fontsize=8,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.7),
+            )
             ax.plot(t_centers, y)
             if ri == 0:
                 ax.set_title("% of events in window")
@@ -743,13 +991,12 @@ def analyze_rtdc(
             if ri == n_rows - 1:
                 ax.set_xlabel("Time")
 
-            # --- Feature columns: mean ± SD
             for ci, f in enumerate(features_to_plot, start=1):
                 ax = axes[ri, ci]
                 means = np.full(len(win), np.nan, float)
                 sds = np.full(len(win), np.nan, float)
-
                 vals = feat_arr[f]
+
                 for wi, s in enumerate(win):
                     v = vals[s][cls[s] == c]
                     if v.size:
@@ -759,14 +1006,15 @@ def analyze_rtdc(
                 overall = np.nanmean(vals[cls == c]) if np.any(cls == c) else np.nan
                 if np.isfinite(overall):
                     ax.axhline(overall, color="red", lw=1, alpha=0.8)
-                    ax.text(0.98, 0.98, f"avg={overall:.3g}", transform=ax.transAxes,
-                            ha="right", va="top", color="red", fontsize=8,
-                            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.7))
+                    ax.text(
+                        0.98, 0.98, f"avg={overall:.3g}", transform=ax.transAxes,
+                        ha="right", va="top", color="red", fontsize=8,
+                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.7),
+                    )
 
                 ax.plot(t_centers, means)
                 if np.isfinite(sds).any():
                     ax.fill_between(t_centers, means - sds, means + sds, alpha=0.2)
-
                 if ri == 0:
                     ax.set_title(f"Mean ± SD: {f}")
                 ax.set_ylabel(f)
@@ -774,7 +1022,12 @@ def analyze_rtdc(
                 if ri == n_rows - 1:
                     ax.set_xlabel("Time")
 
-        fig.suptitle(f"{rtdc_path.name} | N total = {n_total_events} | class_feature={class_feature} | window={n_window}", y=0.995)
+        label = (
+            "all events"
+            if classifier_name is None
+            else f"classifier={resolved_classifier_name}, class_feature={class_feature}"
+        )
+        fig.suptitle(f"{rtdc_path.name} | N total = {n_total_events} | {label} | window={n_window}", y=0.995)
         fig.tight_layout(rect=[0, 0, 1, 0.98])
 
         try:
@@ -786,12 +1039,12 @@ def analyze_rtdc(
             print(f"[FAIL] Could not save {out_png}: {e}")
             return None
 
-def export_examples_of_cells_for_classes_in_rtdc(
+
+def export_rtdc_class_examples(
     path_to_rtdc: Union[str, Path],
-    report_ext: str = "_report_ext",
+    classifier_name: str = "default",
+    report_ext: str = "_classes",
     N_img: int = 30,
-    class_feature: str = "userdef1",
-    prob_feature: str = "userdef2",
     preprocessing_function=None,
     randomize: bool = True,
     prob_thresh: float = 0.9,
@@ -812,6 +1065,11 @@ def export_examples_of_cells_for_classes_in_rtdc(
 ) -> Optional[Path]:
     """
     Create a PNG report showing example preprocessed cell images for each class.
+
+    Probability filtering is applied to classified classes only. Class 0 is the
+    metadata-defined unclassified class and normally has probability 0, so its
+    examples are always sampled without applying ``prob_thresh``.
+
     Uses PIL for pixel-exact spacing and overlay text.
 
     Fine-tuning knobs:
@@ -859,8 +1117,11 @@ def export_examples_of_cells_for_classes_in_rtdc(
         stem = stem[:-5]
     out_png = rtdc_path.with_name(f"{stem}{report_ext}.png")
 
-    # Class names from metadata (fallback to int string)
-    class_names_meta = get_classes_from_rtdc(str(rtdc_path))
+    # Resolve features and class names from metadata using classifier_name.
+    classifier_info = get_classifier_metadata(str(rtdc_path), classifier_name)
+    class_feature = classifier_info["class_feature"]
+    prob_feature = classifier_info["probability_feature"]
+    class_names_meta = classifier_info["class_map"]
 
     # --- Fonts ---
     # Best effort: try a common TrueType font; fallback to PIL default if not available.
@@ -952,17 +1213,22 @@ def export_examples_of_cells_for_classes_in_rtdc(
         cls = np.asarray(ds[class_feature], dtype=int)
         classes = np.unique(cls)
 
-        have_prob = (prob_feature is not None) and (str(prob_feature) in ds.features)
-        if have_prob:
+        if prob_feature is None:
+            # Classifier has no probability output: include every image in each class.
+            have_prob = False
+            above = np.zeros(n_total, dtype=bool)
+            below = np.zeros(n_total, dtype=bool)
+            sel_mask = np.ones(n_total, dtype=bool)
+        else:
+            if str(prob_feature) not in ds.features:
+                print(f"[SKIP] {rtdc_path.name}: probability feature '{prob_feature}' not found")
+                return None
+            have_prob = True
             prob = np.asarray(ds[prob_feature], dtype=float)
             finite = np.isfinite(prob)
             above = finite & (prob >= float(prob_thresh))
             below = finite & (prob < float(prob_thresh))
             sel_mask = above if keep_above_thresh else below
-        else:
-            above = np.zeros(n_total, dtype=bool)
-            below = np.zeros(n_total, dtype=bool)
-            sel_mask = np.ones(n_total, dtype=bool)
 
         # Select indices per class
         per_class = []
@@ -974,6 +1240,11 @@ def export_examples_of_cells_for_classes_in_rtdc(
             in_class = (cls == c)
             n_in_class = int(in_class.sum())
 
+            # Class 0 is reserved for unclassified events. Its probability is
+            # normally 0 by design, so applying a high-confidence threshold
+            # would make its report section blank even when many events exist.
+            probability_filter_applied = bool(have_prob and c != 0)
+
             if have_prob:
                 n_above = int((in_class & above).sum())
                 n_below = int((in_class & below).sum())
@@ -981,7 +1252,8 @@ def export_examples_of_cells_for_classes_in_rtdc(
                 n_above = n_in_class
                 n_below = 0
 
-            candidates = np.where(in_class & sel_mask)[0].astype(int)
+            class_selection_mask = sel_mask if probability_filter_applied else np.ones(n_total, dtype=bool)
+            candidates = np.flatnonzero(in_class & class_selection_mask).astype(int)
             n_candidates = int(candidates.size)
 
             if n_candidates == 0:
@@ -1005,6 +1277,7 @@ def export_examples_of_cells_for_classes_in_rtdc(
                     n_in_class=n_in_class,
                     n_above=n_above,
                     n_below=n_below,
+                    probability_filter_applied=probability_filter_applied,
                     chosen=chosen,
                     n_cols=n_cols,
                 )
@@ -1020,7 +1293,7 @@ def export_examples_of_cells_for_classes_in_rtdc(
             lines = [
                 f"{'Random examples' if randomize else 'Examples'} of images in classes | {rtdc_path.name}",
                 f"N={n_total}",
-                f"class feature='{class_feature}'"
+                f"classifier='{classifier_name}' | class feature='{class_feature}'"
                 ]
             if have_prob:
                 side = ">=" if keep_above_thresh else "<"
@@ -1029,7 +1302,7 @@ def export_examples_of_cells_for_classes_in_rtdc(
                     f"probability threshold: {side} {prob_thresh:g}",
                 ]
             else:
-                lines.append(f"probability feature='{prob_feature}' missing (no threshold filter)")
+                lines.append("probability feature=None (all images included)")
             y = 8
             for ln in lines:
                 draw.text((8, y), ln, font=font_title, fill=0)
@@ -1079,17 +1352,15 @@ def export_examples_of_cells_for_classes_in_rtdc(
         if have_prob:
             side = ">=" if keep_above_thresh else "<"
             title = (
-                
                 f"{'Random examples' if randomize else 'Examples'} of images in classes | {rtdc_path.name}"
-                
-                f" | N={n_total} | "
-                f"class feature='{class_feature}' | probability feature='{prob_feature}' | "
-                f"probability threshold: {side} {prob_thresh:g}"
+                f" | N={n_total} | classifier='{classifier_name}' | class feature='{class_feature}' | "
+                f"probability feature='{prob_feature}' | probability threshold for classified classes: "
+                f"{side} {prob_thresh:g} | class 0 included without probability filtering"
             )
         else:
             title = (
-                f"{rtdc_path.name} | N={n_total} | "
-                f"class feature='{class_feature}' | probability feature='{prob_feature}' (missing; no threshold filter)"
+                f"{rtdc_path.name} | N={n_total} | classifier='{classifier_name}' | "
+                f"class feature='{class_feature}' | probability feature=None (all images included)"
             )
 
         title_lines = _wrap_to_width(ddraw, title, max_px=canvas_w - 2 * outer_pad_x, font=font_title)
@@ -1108,7 +1379,13 @@ def export_examples_of_cells_for_classes_in_rtdc(
         for d in per_class:
             nclass_pct_total = _pct(d["n_in_class"], n_total)
 
-            if have_prob:
+            if have_prob and not d["probability_filter_applied"]:
+                header = (
+                    f"{d['cname']} (class={d['c']}) | "
+                    f"N_class={d['n_in_class']} ({nclass_pct_total}) | "
+                    "probability filter not applied to unclassified events"
+                )
+            elif have_prob:
                 header = (
                     f"{d['cname']} (class={d['c']}) | "
                     f"N_class={d['n_in_class']} ({nclass_pct_total}) | "
@@ -1209,6 +1486,7 @@ def export_examples_of_cells_for_classes_in_rtdc(
 
 
 
+
 ############################################################################
 #
 # helper functions not callable from outside
@@ -1234,71 +1512,354 @@ def _ds_get_rtdc_path(ds) -> str:
     )
 
 
+
 _CLASSIFICATION_META_KEY = "rtdc_tools_classification_json"
+CLASSIFICATION_METADATA_VERSION = "2.0"
+
+
+def _json_safe_class_map(class_map: Dict[Any, Any]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for key, value in dict(class_map or {}).items():
+        try:
+            key = str(int(key))
+        except Exception:
+            key = str(key)
+        out[key] = str(value)
+    return out
+
+
+def _restore_class_map(class_map: Dict[Any, Any]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for key, value in dict(class_map or {}).items():
+        try:
+            out[int(key)] = str(value)
+        except Exception:
+            continue
+    return out
+
+
+def _new_classification_registry() -> dict:
+    return {"version": CLASSIFICATION_METADATA_VERSION, "entries": {}}
+
+
+def _load_classification_registry_from_user(user_meta: Optional[dict]) -> dict:
+    """Parse metadata v2.0, with a best-effort conversion of old single entries."""
+    registry = _new_classification_registry()
+    if not isinstance(user_meta, dict):
+        return registry
+
+    raw = user_meta.get(_CLASSIFICATION_META_KEY)
+    if raw in (None, ""):
+        return registry
+
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else copy.deepcopy(raw)
+    except Exception:
+        return registry
+    if not isinstance(payload, dict):
+        return registry
+
+    if str(payload.get("version")) == CLASSIFICATION_METADATA_VERSION and isinstance(payload.get("entries"), dict):
+        registry["entries"] = copy.deepcopy(payload["entries"])
+        return registry
+
+    # Best-effort import of metadata format 1.x.
+    if any(k in payload for k in ("class_feature", "class_map", "classifier")):
+        class_feature = str(payload.get("class_feature") or "unknown_class_feature")
+        classifier = payload.get("classifier", {})
+        if not isinstance(classifier, dict):
+            classifier = {}
+        registry["entries"][class_feature] = {
+            "class_feature": class_feature,
+            "probability_feature": payload.get("probability_feature"),
+            "class_map": _json_safe_class_map(payload.get("class_map", {})),
+            "classifier": classifier,
+            "created_utc": None,
+            "source_metadata_version": str(payload.get("version", "1.x")),
+        }
+    return registry
+
+
+def _store_classification_registry_in_user(user_meta: dict, registry: dict) -> None:
+    user_meta[_CLASSIFICATION_META_KEY] = json.dumps(registry, ensure_ascii=False)
+
+
+def _register_classifier_metadata(
+    meta: dict,
+    *,
+    class_feature: str,
+    probability_feature: Optional[str],
+    class_map: Dict[Any, Any],
+    classifier: Dict[str, Any],
+) -> dict:
+    """Add one classifier entry, replacing an older entry with the same name."""
+    meta.setdefault("user", {})
+    registry = _load_classification_registry_from_user(meta["user"])
+
+    classifier = copy.deepcopy(classifier) if isinstance(classifier, dict) else {}
+    classifier_name = str(classifier.get("name", "")).strip()
+    if not classifier_name:
+        raise ValueError("classifier['name'] must be a non-empty string")
+
+    # A classifier name is the public identifier, so keep it unique.
+    for key, existing in list(registry.get("entries", {}).items()):
+        if not isinstance(existing, dict):
+            continue
+        existing_classifier = existing.get("classifier", {})
+        if isinstance(existing_classifier, dict) and str(existing_classifier.get("name", "")) == classifier_name:
+            del registry["entries"][key]
+
+    cf = str(class_feature)
+    pf = None if probability_feature in (None, "") else str(probability_feature)
+    registry["version"] = CLASSIFICATION_METADATA_VERSION
+    registry.setdefault("entries", {})[cf] = {
+        "class_feature": cf,
+        "probability_feature": pf,
+        "class_map": _json_safe_class_map(class_map),
+        "classifier": classifier,
+        "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    _store_classification_registry_in_user(meta["user"], registry)
+    return meta
+
 
 def _make_classification_meta_json(
     class_feature: str,
     class_map: Dict[int, str],
     classifier: Dict[str, Any],
+    probability_feature: Optional[str] = None,
 ) -> str:
-    """Build a JSON string for storing classification metadata in RTDC attrs."""
-    payload = {
-        "version": 1,
-        "class_feature": str(class_feature),
-        # store as {str(int): str} because JSON keys must be strings and HDF5 attrs are bytes/str
-        "class_map": {str(int(k)): str(v) for k, v in dict(class_map).items()},
-        "classifier": dict(classifier) if classifier is not None else {},
+    """Build a complete metadata-v2 registry containing one classifier."""
+    meta = {"user": {}}
+    _register_classifier_metadata(
+        meta,
+        class_feature=class_feature,
+        probability_feature=probability_feature,
+        class_map=class_map,
+        classifier=classifier,
+    )
+    return meta["user"][_CLASSIFICATION_META_KEY]
+
+
+def extract_rtdc_classifier_metadata(path_or_ds: Any) -> Dict[str, Any]:
+    """Return a meaningful summary of every classifier registered in an RTDC file."""
+    if isinstance(path_or_ds, (str, os.PathLike, Path)):
+        with dclab.new_dataset(str(path_or_ds)) as ds:
+            return extract_rtdc_classifier_metadata(ds)
+
+    ds = path_or_ds
+    meta = ds.config.as_dict(pop_filtering=True) or {}
+    registry = _load_classification_registry_from_user(meta.get("user", {}))
+    result: Dict[str, Any] = {
+        "metadata_key": _CLASSIFICATION_META_KEY,
+        "version": registry.get("version"),
+        "n_classifiers": 0,
+        "classifiers": [],
     }
-    return json.dumps(payload, ensure_ascii=False)
+
+    for key, raw_entry in registry.get("entries", {}).items():
+        if not isinstance(raw_entry, dict):
+            continue
+        classifier = raw_entry.get("classifier", {})
+        if not isinstance(classifier, dict):
+            classifier = {}
+        class_map = _restore_class_map(raw_entry.get("class_map", {}))
+        result["classifiers"].append({
+            "classifier_name": str(classifier.get("name", "")),
+            "class_feature": str(raw_entry.get("class_feature", key)),
+            "probability_feature": raw_entry.get("probability_feature"),
+            "class_map": class_map,
+            "n_classes": len(class_map),
+            "created_utc": raw_entry.get("created_utc"),
+            "classifier": copy.deepcopy(classifier),
+        })
+
+    result["n_classifiers"] = len(result["classifiers"])
+    return result
+
+
+
+def get_classifier_metadata(
+    path_or_ds: Any,
+    classifier_name: str = "default",
+) -> Dict[str, Any]:
+    """Return metadata for one classifier.
+
+    ``classifier_name="default"`` selects the first classifier in metadata
+    insertion order.  A concrete name selects that classifier explicitly.
+    """
+    info = extract_rtdc_classifier_metadata(path_or_ds)
+    classifiers = info["classifiers"]
+    if not classifiers:
+        raise KeyError("No classifier metadata is stored in this RTDC dataset")
+
+    wanted = str(classifier_name)
+    if wanted == "default":
+        return classifiers[0]
+
+    matches = [item for item in classifiers if item["classifier_name"] == wanted]
+    if not matches:
+        available = [item["classifier_name"] for item in classifiers]
+        raise KeyError(f"Classifier '{wanted}' not found. Available classifiers: {available}")
+    if len(matches) > 1:
+        raise ValueError(f"Classifier name '{wanted}' is not unique in the RTDC metadata")
+    return matches[0]
+
+def print_rtdc_classifier_metadata(path_or_ds: Any) -> Dict[str, Any]:
+    """Print classifier metadata in a concise human-readable form and return it."""
+    info = extract_rtdc_classifier_metadata(path_or_ds)
+    print(f"Classification metadata version: {info['version']}")
+    print(f"Number of classifiers: {info['n_classifiers']}")
+    if not info["classifiers"]:
+        print("No classifier metadata found.")
+        return info
+
+    for item in info["classifiers"]:
+        print(f"\nClassifier: {item['classifier_name']}")
+        print(f"  class feature:       {item['class_feature']}")
+        pf = item["probability_feature"] if item["probability_feature"] is not None else "None (no probability filtering)"
+        print(f"  probability feature: {pf}")
+        classifier = item.get("classifier", {})
+        for key in ("cnn_backbone", "model_file", "model_input_height", "model_input_width", "method", "publication"):
+            if classifier.get(key) is not None:
+                print(f"  {key}: {classifier[key]}")
+        print("  classes:")
+        for value, name in sorted(item["class_map"].items()):
+            print(f"    {value}: {name}")
+    return info
+
+
+def _resolve_class_values(class_map: Dict[int, str], classes: Any) -> List[int]:
+    if isinstance(classes, (str, int, np.integer)):
+        requested = [classes]
+    else:
+        requested = list(classes)
+
+    name_to_values: Dict[str, List[int]] = {}
+    for value, name in class_map.items():
+        name_to_values.setdefault(str(name), []).append(int(value))
+        name_to_values.setdefault(str(name).lower(), []).append(int(value))
+
+    values: List[int] = []
+    for item in requested:
+        if isinstance(item, (int, np.integer)):
+            value = int(item)
+            if value not in class_map:
+                raise KeyError(f"Class value {value} is not present in the classifier class map")
+            values.append(value)
+        else:
+            key = str(item)
+            matches = name_to_values.get(key, name_to_values.get(key.lower(), []))
+            if not matches:
+                raise KeyError(f"Class name '{item}' is not present in the classifier class map")
+            values.extend(matches)
+    return sorted(set(values))
+
+
+def make_classifier_mask(
+    path_or_ds: Any,
+    classifier_name: str,
+    classes: Any,
+    probability_threshold: Optional[float] = None,
+    probability_comparison: str = ">",
+) -> np.ndarray:
+    """
+    Return a Boolean event mask for selected classes of one classifier.
+
+    `classes` may be a class number, class name, or a sequence of either. If the
+    classifier has no probability feature, the probability condition is ignored
+    and every event in the selected classes is retained.
+    """
+    if isinstance(path_or_ds, (str, os.PathLike, Path)):
+        with dclab.new_dataset(str(path_or_ds)) as ds:
+            return make_classifier_mask(
+                ds,
+                classifier_name=classifier_name,
+                classes=classes,
+                probability_threshold=probability_threshold,
+                probability_comparison=probability_comparison,
+            )
+
+    ds = path_or_ds
+    info = get_classifier_metadata(ds, classifier_name)
+    class_feature = info["class_feature"]
+    if class_feature not in ds.features:
+        raise KeyError(f"Class feature '{class_feature}' is missing from the RTDC dataset")
+
+    values = _resolve_class_values(info["class_map"], classes)
+    labels = np.asarray(ds[class_feature], dtype=int)
+    mask = np.isin(labels, values)
+
+    probability_feature = info["probability_feature"]
+    if probability_feature is None or probability_threshold is None:
+        return mask
+    if probability_feature not in ds.features:
+        raise KeyError(f"Probability feature '{probability_feature}' is missing from the RTDC dataset")
+
+    prob = np.asarray(ds[probability_feature], dtype=float)
+    threshold = float(probability_threshold)
+    operators = {
+        ">": np.greater,
+        ">=": np.greater_equal,
+        "<": np.less,
+        "<=": np.less_equal,
+        "==": np.equal,
+    }
+    if probability_comparison not in operators:
+        raise ValueError("probability_comparison must be one of: >, >=, <, <=, ==")
+    return mask & np.isfinite(prob) & operators[probability_comparison](prob, threshold)
+
 
 def _load_classification_meta_from_user(user_meta: dict) -> Tuple[Optional[str], Dict[int, str], Dict[str, Any]]:
     """
-    Extract (class_feature, class_names, classifier) from unified RTDC user metadata.
+    Compatibility helper for code expecting one classifier.
 
-    Unified convention (NO fallbacks):
-      user[_CLASSIFICATION_META_KEY] is a JSON string (or dict) with:
-        - "version": int
-        - "class_feature": str (may be empty; will be updated by save_features_to_rtdc)
-        - "class_map": { "<int_as_str>": "<class_name>", ... }
-        - "classifier": dict (optional)
-
-    Returns
-    -------
-    class_feature : Optional[str]
-    class_names   : dict[int, str]
-    classifier    : dict[str, Any]
+    Returns a result only when exactly one classifier is registered; otherwise
+    it returns `(None, {}, {})` because selecting by classifier name is required.
     """
-    if not isinstance(user_meta, dict):
+    registry = _load_classification_registry_from_user(user_meta)
+    entries = list(registry.get("entries", {}).values())
+    if len(entries) != 1 or not isinstance(entries[0], dict):
         return None, {}, {}
-
-    raw = user_meta.get(_CLASSIFICATION_META_KEY, None)
-    if raw is None:
-        return None, {}, {}
-
-    try:
-        payload = json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
-        return None, {}, {}
-
-    if not isinstance(payload, dict):
-        return None, {}, {}
-
-    cf = payload.get("class_feature", None)
-    cmap = payload.get("class_map", None)
-    classifier = payload.get("classifier", {}) or {}
-
-    class_names: Dict[int, str] = {}
-    if isinstance(cmap, dict):
-        for k, v in cmap.items():
-            try:
-                class_names[int(k)] = str(v)
-            except Exception:
-                continue
-
+    entry = entries[0]
+    classifier = entry.get("classifier", {})
     if not isinstance(classifier, dict):
         classifier = {}
+    return (
+        str(entry.get("class_feature")) if entry.get("class_feature") is not None else None,
+        _restore_class_map(entry.get("class_map", {})),
+        classifier,
+    )
 
-    return (str(cf) if cf is not None else None), class_names, classifier
+
+def _allocate_userdef_features(path_or_ds: Any, count: int) -> List[str]:
+    """Return the next unused `userdefN` feature names."""
+    if isinstance(path_or_ds, (str, os.PathLike, Path)):
+        with dclab.new_dataset(str(path_or_ds)) as ds:
+            return _allocate_userdef_features(ds, count)
+
+    ds = path_or_ds
+    used = {str(name) for name in ds.features}
+    try:
+        info = extract_rtdc_classifier_metadata(ds)
+        for item in info["classifiers"]:
+            used.add(str(item["class_feature"]))
+            if item["probability_feature"] is not None:
+                used.add(str(item["probability_feature"]))
+    except Exception:
+        pass
+
+    result: List[str] = []
+    i = 1
+    while len(result) < int(count):
+        name = f"userdef{i}"
+        if name not in used:
+            result.append(name)
+            used.add(name)
+        i += 1
+        if i > 10000:
+            raise RuntimeError("Could not allocate free userdef feature names")
+    return result
 
 
 def _find_true_runs(mask: np.ndarray) -> List[Tuple[int, int]]:
@@ -1350,16 +1911,11 @@ def _deep_merge_dicts(base: dict, incoming: dict) -> dict:
     return out
 
 
-def _infer_int_class_feature_name(feature_dict: Dict[str, np.ndarray]) -> Optional[str]:
-    """Infer which feature key corresponds to integer class labels."""
-    cands = []
-    for k, v in dict(feature_dict).items():
-        arr = np.asarray(v)
-        if np.issubdtype(arr.dtype, np.integer):
-            cands.append(str(k))
-    if len(cands) == 1:
-        return cands[0]
+
+def _infer_int_class_feature_name(*args, **kwargs):
+    """Deprecated metadata-v1 helper; retained as a no-op."""
     return None
+
 
 
 def _get_ultimate_basin_locs_and_format(basin_rtdc_path: str) -> Tuple[List[str], str]:
@@ -1379,22 +1935,11 @@ def _get_ultimate_basin_locs_and_format(basin_rtdc_path: str) -> Tuple[List[str]
     return [basin_rtdc_path], "hdf5"
 
 
-def _update_classification_meta_class_feature(meta: dict, class_feature: str) -> None:
-    """If unified classification JSON exists, update its 'class_feature' field."""
-    try:
-        user = meta.get("user", {})
-        if not isinstance(user, dict):
-            return
-        raw = user.get(_CLASSIFICATION_META_KEY, None)
-        if not isinstance(raw, str) or not raw:
-            return
-        payload = json.loads(raw)
-        if isinstance(payload, dict):
-            payload["class_feature"] = str(class_feature)
-            user[_CLASSIFICATION_META_KEY] = json.dumps(payload, ensure_ascii=False)
-            meta["user"] = user
-    except Exception:
-        pass
+
+def _update_classification_meta_class_feature(*args, **kwargs):
+    """Deprecated metadata-v1 helper; retained as a no-op."""
+    return None
+
 
 
 
@@ -1405,21 +1950,164 @@ def _update_classification_meta_class_feature(meta: dict, class_feature: str) ->
 ############################################################################
 
 
-# -------------------------------------------------------------------------
-# Lazy wrappers for backward compatibility (ML lives in rtdc_toolbox_ml.py)
-# -------------------------------------------------------------------------
 
-def classify_rtdc_ml(*args, **kwargs):
-    """Lazy wrapper for ML classification (requires torch)."""
-    from rtdc_toolbox_ml import classify_rtdc_ml as _impl
-    return _impl(*args, **kwargs)
 
-def train_model(*args, **kwargs):
-    """Lazy wrapper for ML training (requires torch)."""
-    from rtdc_toolbox_ml import train_model as _impl
-    return _impl(*args, **kwargs)
+# =============================================================================
+# IMAGE-MODEL LAZY WRAPPERS
+# =============================================================================
 
-def load_model(*args, **kwargs):
-    """Lazy wrapper for model loading (requires torch)."""
-    from rtdc_toolbox_ml import load_model as _impl
-    return _impl(*args, **kwargs)
+
+
+def classify_ds_images_ml(
+    ds: Any,
+    mask: Optional[Sequence[bool]] = None,
+    *,
+    path_to_model: str,
+    preprocessing_function: Optional[Callable[..., np.ndarray]] = None,
+    classifier_name: Optional[str] = None,
+    mask_description: Optional[str] = None,
+    verbose: bool = True,
+    show_progress: bool = True,
+    extra_pixels: int = 15,
+    batch_size: int = 1024,
+    num_workers: int = 0,
+    prefetch_batches: int = 8,
+    preprocess_chunk_size: int = 256,
+    use_amp: Optional[bool] = None,
+    preprocess_kwargs: Optional[dict] = None,
+    cv_threads_per_worker: int = 2,
+    exclude_x_overlapping_events: bool = True,
+    min_x_overlap: float = 0.0,
+    min_x_overlap_fraction: float = 0.0,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
+    """Lazy wrapper for image-model inference on an open RTDC dataset."""
+    from rtdc_toolbox_ml import classify_ds_images_ml as implementation
+
+    return implementation(
+        ds,
+        mask=mask,
+        path_to_model=path_to_model,
+        preprocessing_function=preprocessing_function,
+        classifier_name=classifier_name,
+        mask_description=mask_description,
+        verbose=verbose,
+        show_progress=show_progress,
+        extra_pixels=extra_pixels,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        prefetch_batches=prefetch_batches,
+        preprocess_chunk_size=preprocess_chunk_size,
+        use_amp=use_amp,
+        preprocess_kwargs=preprocess_kwargs,
+        cv_threads_per_worker=cv_threads_per_worker,
+        exclude_x_overlapping_events=exclude_x_overlapping_events,
+        min_x_overlap=min_x_overlap,
+        min_x_overlap_fraction=min_x_overlap_fraction,
+    )
+
+
+
+def classify_rtdc_images_ml(
+    path_to_rtdc: str,
+    *,
+    path_to_model: str,
+    preprocessing_function: Optional[Callable[..., np.ndarray]] = None,
+    classifier_name: Optional[str] = None,
+    mask: Optional[Sequence[bool]] = None,
+    mask_description: Optional[str] = None,
+    output_suffix: str = "_images_ml",
+    overwrite: bool = False,
+    verbose: bool = True,
+    show_progress: bool = True,
+    extra_pixels: int = 15,
+    batch_size: int = 1024,
+    num_workers: int = 0,
+    prefetch_batches: int = 8,
+    preprocess_chunk_size: int = 256,
+    use_amp: Optional[bool] = None,
+    preprocess_kwargs: Optional[dict] = None,
+    cv_threads_per_worker: int = 2,
+    exclude_x_overlapping_events: bool = True,
+    min_x_overlap: float = 0.0,
+    min_x_overlap_fraction: float = 0.0,
+) -> str:
+    """Lazy wrapper for image-model classification of an RTDC file."""
+    from rtdc_toolbox_ml import classify_rtdc_images_ml as implementation
+
+    return implementation(
+        path_to_rtdc=path_to_rtdc,
+        path_to_model=path_to_model,
+        preprocessing_function=preprocessing_function,
+        classifier_name=classifier_name,
+        mask=mask,
+        mask_description=mask_description,
+        output_suffix=output_suffix,
+        overwrite=overwrite,
+        verbose=verbose,
+        show_progress=show_progress,
+        extra_pixels=extra_pixels,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        prefetch_batches=prefetch_batches,
+        preprocess_chunk_size=preprocess_chunk_size,
+        use_amp=use_amp,
+        preprocess_kwargs=preprocess_kwargs,
+        cv_threads_per_worker=cv_threads_per_worker,
+        exclude_x_overlapping_events=exclude_x_overlapping_events,
+        min_x_overlap=min_x_overlap,
+        min_x_overlap_fraction=min_x_overlap_fraction,
+    )
+
+
+def train_model_on_images(
+    path_to_training_set: str,
+    training_results_dir: str,
+    model_name: str,
+    zip: bool = True,
+    cnn_backbone: str = "resnet18",
+    img_ext: str = ".png",
+    n_epochs: int = 15,
+    W0: int = 160,
+    val_split: float = 0.2,
+    batch_size: int = 64,
+    lr: float = 3e-4,
+    weight_decay: float = 1e-4,
+    brightness_jitter: float = 0.0,
+    contrast_jitter: float = 0.0,
+    imbalance_cfg: Optional[Any] = None,
+    seed: int = 123,
+    num_workers: int = 0,
+    pretrained: bool = True,
+    cache_in_ram: bool = False,
+) -> str:
+    """Train an image-only CNN from preprocessed grayscale images."""
+    from rtdc_toolbox_ml import train_model_on_images as implementation
+    return implementation(
+        path_to_training_set=path_to_training_set,
+        training_results_dir=training_results_dir,
+        model_name=model_name,
+        zip=zip,
+        cnn_backbone=cnn_backbone,
+        img_ext=img_ext,
+        n_epochs=n_epochs,
+        W0=W0,
+        val_split=val_split,
+        batch_size=batch_size,
+        lr=lr,
+        weight_decay=weight_decay,
+        brightness_jitter=brightness_jitter,
+        contrast_jitter=contrast_jitter,
+        imbalance_cfg=imbalance_cfg,
+        seed=seed,
+        num_workers=num_workers,
+        pretrained=pretrained,
+        cache_in_ram=cache_in_ram,
+    )
+
+
+def load_image_model(model_path: str):
+    """Load an image-only CNN model bundle saved by train_model_on_images."""
+    from rtdc_toolbox_ml import load_image_model as implementation
+    return implementation(model_path)
+
+
