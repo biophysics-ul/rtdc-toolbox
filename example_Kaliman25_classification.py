@@ -7,11 +7,11 @@ False:
     the crude WBC preselection.
 
 True:
-    Read WBCs from the corresponding image-classified RTDC file and pass that
-    mask to Kaliman25 with preselected_wbcs=True. Kaliman Step 1 is skipped and
-    the image-selected WBCs enter directly at Step 2.
+    Read WBCs from the selected input RTDC file and pass that mask to Kaliman25
+    with preselected_wbcs=True. Kaliman Step 1 is skipped and the image-selected
+    WBCs enter directly at Step 2.
 
-Framework API: 2.3.2-unified-classifier-api
+rtdc-toolbox framework version 2.0 (August 2026)
 """
 
 from __future__ import annotations
@@ -23,15 +23,30 @@ import rtdc_toolbox
 
 def find_unclassified_rtdc_files(
     folder: str | Path,
-    ext1: str,
-    ext2: str,
+    input_extension: str,
+    kaliman_extension: str,
 ) -> list[Path]:
-    """Find files ending in ext1 without a corresponding ext2-derived file."""
+    """
+    Find input RTDC files that do not yet have a Kaliman-classified result.
+
+    Example:
+        input_extension   = "_dcn_b7c"
+        kaliman_extension = "_kaliman25"
+
+    searches for:
+        *_dcn_b7c.rtdc
+
+    and skips files for which this already exists:
+        *_dcn_b7c_kaliman25.rtdc
+    """
     folder = Path(folder)
+
     return sorted(
         path
-        for path in folder.rglob(f"*{ext1}.rtdc")
-        if not path.with_name(f"{path.stem}{ext2}.rtdc").exists()
+        for path in folder.rglob(f"*{input_extension}.rtdc")
+        if not path.with_name(
+            f"{path.stem}{kaliman_extension}.rtdc"
+        ).exists()
     )
 
 
@@ -39,11 +54,17 @@ def find_unclassified_rtdc_files(
 # USER SETTINGS
 # =============================================================================
 
-main_folder_with_rtdc = r"Z:\KK_Staro\Brez"
+main_folder_with_rtdc = r"Z:\KK"
 
-extension_segmented_rtdc = "_dcn"
-extension_image_classified_rtdc = "_b7c"
-extension_kaliman_rtdc = "_kaliman25a"
+# Analyze only RTDC files ending with this extension.
+# Example input:
+#     2026-04-29_14.57_M001_D003_dcn_b7c.rtdc
+extension_rtdc_to_analyze = "_dcn_b7c"
+
+# This is appended to the selected input filename.
+# Example output:
+#     2026-04-29_14.57_M001_D003_dcn_b7c_kaliman25.rtdc
+extension_kaliman_rtdc = "_kaliman25"
 
 USE_IMAGE_SELECTED_WBCS = True
 WBC_PROBABILITY_THRESHOLD = 0.90
@@ -55,8 +76,8 @@ WBC_PROBABILITY_THRESHOLD = 0.90
 
 unclassified_rtdc_list = find_unclassified_rtdc_files(
     folder=main_folder_with_rtdc,
-    ext1=extension_segmented_rtdc,
-    ext2=extension_kaliman_rtdc,
+    input_extension=extension_rtdc_to_analyze,
+    kaliman_extension=extension_kaliman_rtdc,
 )
 
 print(f"Found {len(unclassified_rtdc_list)} RTDC files to process.")
@@ -68,16 +89,10 @@ for i, path_to_rtdc in enumerate(unclassified_rtdc_list, start=1):
     )
 
     if USE_IMAGE_SELECTED_WBCS:
-        image_rtdc = path_to_rtdc.with_name(
-            f"{path_to_rtdc.stem}{extension_image_classified_rtdc}.rtdc"
-        )
-
-        if not image_rtdc.exists():
-            print(f"  Skipping: image-classified file not found: {image_rtdc}")
-            continue
-
+        # The selected input file is already the image-classified RTDC file.
+        # Use its WBC class to build the mask for Kaliman25.
         wbc_mask = rtdc_toolbox.make_classifier_mask(
-            path_or_ds=image_rtdc,
+            path_or_ds=path_to_rtdc,
             classifier_name="default",
             classes="WBC",
             probability_threshold=WBC_PROBABILITY_THRESHOLD,
@@ -88,7 +103,7 @@ for i, path_to_rtdc in enumerate(unclassified_rtdc_list, start=1):
 
         preselected_wbcs = True
         mask_description = (
-            f"WBC events selected from {image_rtdc.name} with "
+            f"WBC events selected from {path_to_rtdc.name} with "
             f"probability > {WBC_PROBABILITY_THRESHOLD:g}"
         )
 
@@ -113,7 +128,7 @@ for i, path_to_rtdc in enumerate(unclassified_rtdc_list, start=1):
 
     rtdc_toolbox.export_rtdc_class_stability_report(
         path_to_rtdc=kaliman_rtdc,
-        classifier_name="default",
+        classifier_name="Kaliman25_WBC",
         features_to_plot=("area_um", "deform", "bright_avg", "area_ratio"),
         n_window=10_000,
         step=1_000,
@@ -121,7 +136,7 @@ for i, path_to_rtdc in enumerate(unclassified_rtdc_list, start=1):
 
     rtdc_toolbox.export_rtdc_class_examples(
         path_to_rtdc=kaliman_rtdc,
-        classifier_name="default",
+        classifier_name="Kaliman25_WBC",
         report_ext="_classes",
         N_img=40,
         preprocessing_function=rtdc_toolbox.preprocess_rtdc_image,

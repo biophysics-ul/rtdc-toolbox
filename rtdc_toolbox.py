@@ -902,6 +902,16 @@ def export_rtdc_class_stability_report(
     """
     Analyze one RTDC file and save a PNG stability report.
 
+    The first row gives classifier-independent acquisition QC:
+      - number of events per ``n_window`` frames,
+      - temperature (``temp``),
+      - background-corrected brightness (``bright_bc_avg``),
+      - lateral position (``pos_y``).
+
+    Remaining rows show, for each class:
+      - percentage of events in the class,
+      - mean ± SD of each feature in ``features_to_plot``.
+
     ``classifier_name="default"`` selects the first metadata entry. Pass a
     concrete classifier name to select it explicitly, or ``None`` to analyze
     all events as one group.
@@ -915,7 +925,11 @@ def export_rtdc_class_stability_report(
     out_png = Path(out_png) if out_png is not None else rtdc_path.with_suffix(".png")
 
     def get_time(ds):
-        return np.asarray(ds["time"], float) if "time" in ds.features else np.arange(len(ds), dtype=float)
+        return (
+            np.asarray(ds["time"], float)
+            if "time" in ds.features
+            else np.arange(len(ds), dtype=float)
+        )
 
     def slices(n, w, st):
         st = w if st is None else st
@@ -942,7 +956,10 @@ def export_rtdc_class_stability_report(
             resolved_classifier_name = cinfo["classifier_name"]
             class_feature = cinfo["class_feature"]
             if class_feature not in ds.features:
-                print(f"[SKIP] {rtdc_path.name}: class feature '{class_feature}' not found")
+                print(
+                    f"[SKIP] {rtdc_path.name}: "
+                    f"class feature '{class_feature}' not found"
+                )
                 return None
             cls = np.asarray(ds[class_feature], dtype=int)
             local_names = cinfo["class_map"]
@@ -951,43 +968,189 @@ def export_rtdc_class_stability_report(
             print(f"[SKIP] {rtdc_path.name}: no events")
             return None
 
+        # Event-index windows used for the all-event feature QC and class-wise plots.
+        win = slices(len(cls), n_window, step)
+        t_centers = np.array([np.nanmean(t[s]) for s in win], float)
+
+        # Requested class-wise feature arrays. Missing features become NaN.
         feat_arr = {
-            f: np.asarray(ds[f], float) if f in ds.features else np.full(len(cls), np.nan, float)
+            f: (
+                np.asarray(ds[f], float)
+                if f in ds.features
+                else np.full(len(cls), np.nan, float)
+            )
             for f in features_to_plot
         }
 
-        win = slices(len(cls), n_window, step)
-        t_centers = np.array([np.nanmean(t[s]) for s in win], float)
+        # First-row acquisition QC features, independent of classifier.
+        overview_features = ["temp", "bright_bc_avg", "pos_y"]
+        overview_arr = {
+            f: (
+                np.asarray(ds[f], float)
+                if f in ds.features
+                else np.full(len(cls), np.nan, float)
+            )
+            for f in overview_features
+        }
+
+        # Event-count stability is evaluated in frame windows.
+        if "frame" in ds.features:
+            frame = np.asarray(ds["frame"], int)
+            frame_min = int(np.nanmin(frame))
+            frame_max = int(np.nanmax(frame))
+
+            frame_starts = np.arange(frame_min, frame_max + 1, int(step))
+            frame_stops = frame_starts + int(n_window)
+
+            n_events_per_frame_window = np.array(
+                [
+                    np.sum((frame >= f0) & (frame < f1))
+                    for f0, f1 in zip(frame_starts, frame_stops)
+                ],
+                float,
+            )
+
+            t_frame_centers = np.array(
+                [
+                    np.nanmean(t[(frame >= f0) & (frame < f1)])
+                    if np.any((frame >= f0) & (frame < f1))
+                    else np.nan
+                    for f0, f1 in zip(frame_starts, frame_stops)
+                ],
+                float,
+            )
+        else:
+            # Fallback for unusual RTDC files without a frame feature.
+            frame = None
+            n_events_per_frame_window = np.array(
+                [s.stop - s.start for s in win],
+                float,
+            )
+            t_frame_centers = t_centers
+
         classes = np.unique(cls)
-        n_rows = len(classes)
-        n_cols = 1 + len(features_to_plot)
+
+        n_overview_cols = 1 + len(overview_features)  # event count + 3 QC features
+        n_class_cols = 1 + len(features_to_plot)
+        n_cols = max(n_overview_cols, n_class_cols)
+        n_rows = 1 + len(classes)
 
         fig, axes = plt.subplots(
             n_rows,
             n_cols,
-            figsize=(4.8 * n_cols, max(2.5, 1.9 * n_rows)),
+            figsize=(4.8 * n_cols, max(3.0, 1.9 * n_rows)),
             sharex=True,
         )
+
         if n_rows == 1:
             axes = np.array([axes])
+        if n_cols == 1:
+            axes = axes.reshape(n_rows, 1)
 
-        for ri, c in enumerate(classes):
+        # =====================================================================
+        # First row: classifier-independent acquisition QC
+        # =====================================================================
+
+        # Events per frame window.
+        ax = axes[0, 0]
+        ax.plot(t_frame_centers, n_events_per_frame_window)
+        if frame is not None:
+            ax.set_title(f"Events per {n_window} frames")
+        else:
+            ax.set_title("Events per window")
+        ax.set_ylabel("N events")
+        ax.grid(True, alpha=0.25)
+
+        # temp, bright_bc_avg, pos_y: all-event mean ± SD over time.
+        for ci, f in enumerate(overview_features, start=1):
+            ax = axes[0, ci]
+            vals = overview_arr[f]
+
+            means = np.full(len(win), np.nan, float)
+            sds = np.full(len(win), np.nan, float)
+
+            for wi, s in enumerate(win):
+                v = vals[s]
+                if v.size:
+                    means[wi] = np.nanmean(v)
+                    sds[wi] = np.nanstd(v)
+
+            overall = np.nanmean(vals)
+            if np.isfinite(overall):
+                ax.axhline(overall, color="red", lw=1, alpha=0.8)
+                ax.text(
+                    0.98,
+                    0.98,
+                    f"avg={overall:.3g}",
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="top",
+                    color="red",
+                    fontsize=8,
+                    bbox=dict(
+                        boxstyle="round,pad=0.2",
+                        facecolor="white",
+                        edgecolor="none",
+                        alpha=0.7,
+                    ),
+                )
+
+            ax.plot(t_centers, means)
+            if np.isfinite(sds).any():
+                ax.fill_between(
+                    t_centers,
+                    means - sds,
+                    means + sds,
+                    alpha=0.2,
+                )
+
+            ax.set_title(f"All events: {f}")
+            ax.set_ylabel(f)
+            ax.grid(True, alpha=0.25)
+
+        # Hide any unused cells in the first row.
+        for ci in range(n_overview_cols, n_cols):
+            axes[0, ci].axis("off")
+
+        # =====================================================================
+        # Remaining rows: class-wise stability
+        # =====================================================================
+
+        for ri, c in enumerate(classes, start=1):
             cname = local_names.get(int(c), str(int(c)))
 
             ax = axes[ri, 0]
-            y = np.array([100.0 * np.mean(cls[s] == c) for s in win], float)
+            y = np.array(
+                [100.0 * np.mean(cls[s] == c) for s in win],
+                float,
+            )
             overall = 100.0 * np.mean(cls == c)
+
             ax.axhline(overall, color="red", lw=1, alpha=0.8)
             ax.text(
-                0.98, 0.98, f"avg={overall:.2f}%", transform=ax.transAxes,
-                ha="right", va="top", color="red", fontsize=8,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.7),
+                0.98,
+                0.98,
+                f"avg={overall:.2f}%",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                color="red",
+                fontsize=8,
+                bbox=dict(
+                    boxstyle="round,pad=0.2",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.7,
+                ),
             )
             ax.plot(t_centers, y)
-            if ri == 0:
+
+            if ri == 1:
                 ax.set_title("% of events in window")
+
             ax.set_ylabel(f"{cname}\nPercent (%)")
             ax.grid(True, alpha=0.25)
+
             if ri == n_rows - 1:
                 ax.set_xlabel("Time")
 
@@ -1003,31 +1166,69 @@ def export_rtdc_class_stability_report(
                         means[wi] = np.nanmean(v)
                         sds[wi] = np.nanstd(v)
 
-                overall = np.nanmean(vals[cls == c]) if np.any(cls == c) else np.nan
+                overall = (
+                    np.nanmean(vals[cls == c])
+                    if np.any(cls == c)
+                    else np.nan
+                )
+
                 if np.isfinite(overall):
                     ax.axhline(overall, color="red", lw=1, alpha=0.8)
                     ax.text(
-                        0.98, 0.98, f"avg={overall:.3g}", transform=ax.transAxes,
-                        ha="right", va="top", color="red", fontsize=8,
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.7),
+                        0.98,
+                        0.98,
+                        f"avg={overall:.3g}",
+                        transform=ax.transAxes,
+                        ha="right",
+                        va="top",
+                        color="red",
+                        fontsize=8,
+                        bbox=dict(
+                            boxstyle="round,pad=0.2",
+                            facecolor="white",
+                            edgecolor="none",
+                            alpha=0.7,
+                        ),
                     )
 
                 ax.plot(t_centers, means)
+
                 if np.isfinite(sds).any():
-                    ax.fill_between(t_centers, means - sds, means + sds, alpha=0.2)
-                if ri == 0:
+                    ax.fill_between(
+                        t_centers,
+                        means - sds,
+                        means + sds,
+                        alpha=0.2,
+                    )
+
+                if ri == 1:
                     ax.set_title(f"Mean ± SD: {f}")
+
                 ax.set_ylabel(f)
                 ax.grid(True, alpha=0.25)
+
                 if ri == n_rows - 1:
                     ax.set_xlabel("Time")
+
+            # Hide unused cells if the overview row requires more columns than
+            # this class-wise row.
+            for ci in range(n_class_cols, n_cols):
+                axes[ri, ci].axis("off")
 
         label = (
             "all events"
             if classifier_name is None
-            else f"classifier={resolved_classifier_name}, class_feature={class_feature}"
+            else (
+                f"classifier={resolved_classifier_name}, "
+                f"class_feature={class_feature}"
+            )
         )
-        fig.suptitle(f"{rtdc_path.name} | N total = {n_total_events} | {label} | window={n_window}", y=0.995)
+
+        fig.suptitle(
+            f"{rtdc_path.name} | N total = {n_total_events} | "
+            f"{label} | window={n_window}",
+            y=0.995,
+        )
         fig.tight_layout(rect=[0, 0, 1, 0.98])
 
         try:

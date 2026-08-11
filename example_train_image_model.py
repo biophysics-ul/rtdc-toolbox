@@ -1,7 +1,7 @@
 
 """Example: train an RT-DC classifier from preprocessed grayscale images.
 
-Framework API: 2.3.2-unified-classifier-api
+rtdc-toolbox framework version 2.0 (August 2026)
 
 The example reads a ZIP archive with one top-level folder per class::
 

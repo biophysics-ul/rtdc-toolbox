@@ -4,7 +4,7 @@ The script recursively finds segmented RTDC files that do not yet have the
 specified image-classified analogue, classifies them with the image model, and
 exports metadata and quality-control reports.
 
-Framework API: 2.3.2-unified-classifier-api
+rtdc-toolbox framework version 2.0 (August 2026)
 """
 
 from __future__ import annotations
