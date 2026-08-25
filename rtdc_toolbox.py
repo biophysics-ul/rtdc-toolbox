@@ -1160,7 +1160,6 @@ def export_rtdc_class_scatter_plots(
     fig.savefig(out_png, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
-    print(f"Saved scatter plot report: {out_png}")
     return out_png
 
 def export_rtdc_class_stability_report(
