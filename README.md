@@ -8,92 +8,85 @@ The toolkit is especially useful if you want to develop your own *image-based* e
 
 ## Table of contents
 
-- [1. Repository files](#1-repository-files)
-- [2. Typical workflow and output names](#2-typical-workflow-and-output-names)
-- [3. Model and classifier metadata](#3-model-and-classifier-metadata)
-- [4. Main usage](#4-main-usage)
-- [5. Main toolbox functions](#5-main-toolbox-functions)
-- [6. Installation](#6-installation)
-- [7. Citation](#7-citation)
+* [1. Repository files](#1-repository-files)
+* [2. Typical workflow and output names](#2-typical-workflow-and-output-names)
+* [3. Model and classifier metadata](#3-model-and-classifier-metadata)
+* [4. Main usage](#4-main-usage)
+* [5. Main toolbox functions](#5-main-toolbox-functions)
+* [6. Installation](#6-installation)
+* [7. Citation](#7-citation)
 
-## 1. Repository files
+## 1\. Repository files
+
 The repository comprises two modules, one utility, and several example scripts demonstrating how to use the toolbox.
 
 **Modules:**
 
-- `rtdc_toolbox.py` — a module with utilities for working with RT-DC files.
-
-- `rtdc_toolbox_ml.py` — a module for training image classifiers and applying them to RT-DC files. It requires PyTorch. A detailed description of this module is provided in [`rtdc_toolbox_ml_framework.md`](rtdc_toolbox_ml_framework.md).
+* `rtdc\\\_toolbox.py` — a module with utilities for working with RT-DC files.
+* `rtdc\\\_toolbox\\\_ml.py` — a module for training image classifiers and applying them to RT-DC files. It requires PyTorch. A detailed description of this module is provided in [`rtdc\\\_toolbox\\\_ml\\\_framework.md`](rtdc_toolbox_ml_framework.md).
 
 **Utilities:**
 
-- `rtdc_viewer.py` — a simple viewer for images in RT-DC files, with classifier/class selection and event inspection.
+* `rtdc\\\_viewer.py` — a simple viewer for images in RT-DC files, with classifier/class selection and event inspection.
 
 **Examples:**
 
-- `example_train_image_model.py` — an example script for training your own image classifier. The trained image-classification model is stored in a `.pt` file. 
-
-- `example_image_classification.py` — an example script for classifying events in RT-DC files using your own image-classification model.
-
-- `example_Kaliman25_classification.py` — an example script for classifying WBCs into subtypes (lymphocytes, neutrophils, etc.) using the method described by Kaliman et al. (2025), [https://doi.org/10.1016/j.bpj.2025.10.007](https://doi.org/10.1016/j.bpj.2025.10.007).
-
-- `example_make_QC_plots_images.py` — creates quality-control reports for image-classified RT-DC files. It generates acquisition/class stability plots, representative class images, and class-colored scatter plots.
-
-- `example_make_QC_plots_kaliman.py` — creates the corresponding quality-control reports for Kaliman25-classified WBC data.
-
-- `example_export_random_images_by_class.py` — an example script for exporting random images from classified RT-DC files; useful for inspecting and iteratively improving image training sets.
+* `example\\\_train\\\_image\\\_model.py` — an example script for training your own image classifier. The trained image-classification model is stored in a `.pt` file.
+* `example\\\_image\\\_classification.py` — an example script for classifying events in RT-DC files using your own image-classification model.
+* `example\\\_Kaliman25\\\_classification.py` — an example script for classifying WBCs into subtypes (lymphocytes, neutrophils, etc.) using the method described by Kaliman et al. (2025), [https://doi.org/10.1016/j.bpj.2025.10.007](https://doi.org/10.1016/j.bpj.2025.10.007).
+* `example\\\_make\\\_QC\\\_plots\\\_images.py` — creates quality-control reports for image-classified RT-DC files. It generates acquisition/class stability plots, representative class images, and class-colored scatter plots.
+* `example\\\_make\\\_QC\\\_plots\\\_Kaliman25.py` — creates the corresponding quality-control reports for Kaliman25-classified WBC data.
+* `example\\\_export\\\_random\\\_images\\\_by\\\_class.py` — an example script for exporting random images from classified RT-DC files; useful for inspecting and iteratively improving image training sets.
 
 
-## 2. Typical workflow and output names
 
-### 2.1 Classification workflow 
+## 2\. Typical workflow and output names
+
+### 2.1 Classification workflow
 
 A typical RT-DC experiment produces two files, for example:
 
-- `MySample.rtdc` — the original RT-DC file.
-- `MySample_dcn.rtdc` — a file containing segmented events, e.g. generated using ChipStream, and linked to the original RT-DC file.
+* `MySample.rtdc` — the original RT-DC file.
+* `MySample\\\_dcn.rtdc` — a file containing segmented events, e.g. generated using ChipStream, and linked to the original RT-DC file.
 
-When you run an image classifier (`example_image_classification.py`), it produces another RT-DC file containing the event-classification results, for example:
+When you run an image classifier (`example\\\_image\\\_classification.py`), it produces another RT-DC file containing the event-classification results, for example:
 
-- `MySample_dcn_myext.rtdc` — this file is linked to `MySample_dcn.rtdc` and contains only the classification information.
+* `MySample\\\_dcn\\\_myext.rtdc` — this file is linked to `MySample\\\_dcn.rtdc` and contains only the classification information.
 
-The suffix `_myext` is user-configurable and should reflect the model used for classification. For example, we use `_b7c` as the suffix for a model developed for whole blood that classifies events into seven distinct classes (RBCs, WBCs, platelets, aggregates, etc.).
+The suffix `\\\_myext` is user-configurable and should reflect the model used for classification. For example, we use `\\\_b7c` as the suffix for a model developed for whole blood that classifies events into seven distinct classes (RBCs, WBCs, platelets, aggregates, etc.).
 
-Classification with one classifier can serve as the basis for classification with another classifier. For example, events in whole-blood samples can first be classified using the `_b7c` image-based classifier, and then only WBCs can be further classified into WBC subtypes (lymphocytes, neutrophils. etc.) using the classifier based on Kaliman et al. (2025). This classification produces another RT-DC file:
+Classification with one classifier can serve as the basis for classification with another classifier. For example, events in whole-blood samples can first be classified using the `\\\_b7c` image-based classifier, and then only WBCs can be further classified into WBC subtypes (lymphocytes, neutrophils. etc.) using the classifier based on Kaliman et al. (2025). This classification produces another RT-DC file:
 
-- `MySample_dcn_myext_kaliman25.rtdc` — this file is linked to `MySample_dcn_myext.rtdc` and contains information about WBC subtypes.
+* `MySample\\\_dcn\\\_myext\\\_kaliman25.rtdc` — this file is linked to `MySample\\\_dcn\\\_myext.rtdc` and contains information about WBC subtypes.
 
 **Important: don't forget quality control.**
 
 Classification and quality control are intentionally kept as separate steps. The classification examples create the classified RT-DC files and print classifier metadata; they do not generate plots. After classification, run the appropriate QC example:
 
-- `example_make_QC_plots_images.py` for image-classified RT-DC files;
-- `example_make_QC_plots_kaliman.py` for Kaliman25-classified RT-DC files.
+* `example\\\_make\\\_QC\\\_plots\\\_images.py` for image-classified RT-DC files;
+* `example\\\_make\\\_QC\\\_plots\\\_Kaliman25.py` for Kaliman25-classified RT-DC files.
 
 At the current stage of the rtdc-toolbox framework, it is important to visually inspect the quality of each experiment and its classification. The experimental workflow is typically reliable, but occasional acquisition or classification problems can occur, and automated quality control is not yet implemented. Each QC example generates three complementary PNG reports for every selected RT-DC file:
 
-- `<stem>_stability.png` — shows acquisition stability, class percentages, and selected RT-DC features over time. It is produced by `export_rtdc_class_stability_report()`.
+* `<stem>\\\_stability.png` — shows acquisition stability, class percentages, and selected RT-DC features over time. It is produced by `export\\\_rtdc\\\_class\\\_stability\\\_report()`.
+* `<stem>\\\_classes.png` — contains representative preprocessed images from the classifier classes and helps visually assess whether the assigned classes make sense. It is produced by `export\\\_rtdc\\\_class\\\_examples()`.
+* `<stem>\\\_scatter.png` — shows user-selected pairs of RT-DC features as scatter plots with events colored by classifier class. It is produced by `export\\\_rtdc\\\_class\\\_scatter\\\_plots()`. The user can choose which classes and feature pairs to display, the number of subplot columns, point size/opacity, optional probability filtering, and optional per-class downsampling.
 
-- `<stem>_classes.png` — contains representative preprocessed images from the classifier classes and helps visually assess whether the assigned classes make sense. It is produced by `export_rtdc_class_examples()`.
-
-- `<stem>_scatter.png` — shows user-selected pairs of RT-DC features as scatter plots with events colored by classifier class. It is produced by `export_rtdc_class_scatter_plots()`. The user can choose which classes and feature pairs to display, the number of subplot columns, point size/opacity, optional probability filtering, and optional per-class downsampling.
-
-The QC example scripts store these PNG files below a configurable `output_folder` and preserve the relative subfolder structure of the RT-DC data. For image classifiers, QC can apply a classification-probability threshold. Kaliman25 does not produce classification probabilities, so the Kaliman QC example uses `probability_threshold = None`.
+The QC example scripts store these PNG files below a configurable `output\\\_folder` and preserve the relative subfolder structure of the RT-DC data. For image classifiers, QC can apply a classification-probability threshold. Kaliman25 does not produce classification probabilities, so the Kaliman QC example uses `probability\\\_threshold = None`.
 
 ### 2.2 Training workflow
 
-To train your own image-classification model you first need a good training set. The easiest way is to export random images from your RT-DC files (see `example_export_random_images_by_class.py`), sort them manually into class folders, and then run the training script (see `example_train_image_model.py`). Folder names define the class names used by the model. In Windows, manual sorting is straightforward in File Explorer when using View → Large icons.  Once you have trained an initial image-classification model, you can use it to classify your RT-DC files. You can then export representative images from each predicted class, inspect them manually, and add suitable images to the training set. Usually you can get a quality training set containing a few thousand images per class after a couple of iterations.
+To train your own image-classification model you first need a good training set. The easiest way is to export random images from your RT-DC files (see `example\\\_export\\\_random\\\_images\\\_by\\\_class.py`), sort them manually into class folders, and then run the training script (see `example\\\_train\\\_image\\\_model.py`). Folder names define the class names used by the model. In Windows, manual sorting is straightforward in File Explorer when using View → Large icons.  Once you have trained an initial image-classification model, you can use it to classify your RT-DC files. You can then export representative images from each predicted class, inspect them manually, and add suitable images to the training set. Usually you can get a quality training set containing a few thousand images per class after a couple of iterations.
+
 
 
 **Additional notes**
 
-- Classification results are stored directly in the RT-DC file as additional scalar features. Typically, the class number is stored in `userdef1` and the classification probability in `userdef2`.
+* Classification results are stored directly in the RT-DC file as additional scalar features. Typically, the class number is stored in `userdef1` and the classification probability in `userdef2`.
+* Classified RT-DC files can be analyzed with standard RT-DC software such as Cytoplot. For example, you can filter events using `userdef1` and `userdef2`, or use `userdef1` to color events by class in scatter plots.
+* During classification, images should be preprocessed in the same way as the images used to train the model. For example, we always use the same preprocessing steps: a) subtract the background image, reducing stationary structures such as the channel walls; b) crop the event from the image with up to 15 additional pixels on each side (The function used to obtain a preprocessed event image from an RT-DC file is `preprocess\\\_rtdc\\\_image()` - you can supply a different preprocessing function if you want).
 
-- Classified RT-DC files can be analyzed with standard RT-DC software such as Cytoplot. For example, you can filter events using `userdef1` and `userdef2`, or use `userdef1` to color events by class in scatter plots.
-
-- During classification, images should be preprocessed in the same way as the images used to train the model. For example, we always use the same preprocessing steps: a) subtract the background image, reducing stationary structures such as the channel walls; b) crop the event from the image with up to 15 additional pixels on each side (The function used to obtain a preprocessed event image from an RT-DC file is `preprocess_rtdc_image()` - you can supply a different preprocessing function if you want).
-
-## 3. Model and classifier metadata
+## 3\. Model and classifier metadata
 
 In addition to the numerical class values stored in the RT-DC file, `rtdc-toolbox` also saves information describing the classifier that produced them. This includes the classifier name, the meaning of the class numbers, and, when available, the RT-DC feature containing the classification probabilities.
 
@@ -101,47 +94,47 @@ This information makes it possible for the toolbox and the viewers to recognize 
 
 Class `0` is reserved for events that are not classified. This may include events that were intentionally excluded from classification or events for which classification was not possible.
 
-To get metadata from your `.rtdc` file, symply call function `extract_rtdc_classifier_metadata(rtdc_path)` or `print_rtdc_classifier_metadata(rtdc_path)`.
+To get metadata from your `.rtdc` file, symply call function `extract\\\_rtdc\\\_classifier\\\_metadata(rtdc\\\_path)` or `print\\\_rtdc\\\_classifier\\\_metadata(rtdc\\\_path)`.
 
 To get metadata from your trained image model in a `.pt` file, you can use the following script:
 
 ```python
 import torch
 
-bundle = torch.load(model_path, map_location="cpu")
+bundle = torch.load(model\\\_path, map\\\_location="cpu")
 
 for key, value in bundle.items():
-    if key != "model_state_dict":
+    if key != "model\\\_state\\\_dict":
         print(f"{key}: {value}")
 ```
 
-## 4. Main usage
+## 4\. Main usage
 
 ### 4.1 View RT-DC images
 
 Run:
 
 ```text
-rtdc_viewer.py
+rtdc\\\_viewer.py
 ```
 
 The viewer lets you:
 
-- open an RT-DC file;
-- browse event images in a grid;
-- show or hide event contours;
-- select a classifier and display individual classes;
-- see the predicted class and classification confidence;
-- click an event to inspect its image, background image, and selected RT-DC features.
+* open an RT-DC file;
+* browse event images in a grid;
+* show or hide event contours;
+* select a classifier and display individual classes;
+* see the predicted class and classification confidence;
+* click an event to inspect its image, background image, and selected RT-DC features.
 
-A simpler OpenCV-based viewer, `rtdc_image_viewer_openCV.py`, is also included.
+A simpler OpenCV-based viewer, `rtdc\\\_image\\\_viewer\\\_openCV.py`, is also included.
 
 ### 4.2 Train your own image classifier
 
 See:
 
 ```text
-example_train_image_model.py
+example\\\_train\\\_image\\\_model.py
 ```
 
 The script shows how to train an image classifier from a set of manually sorted cell images.
@@ -165,28 +158,28 @@ During training, the toolbox creates model files and several plots that help you
 See:
 
 ```text
-example_image_classification.py
+example\\\_image\\\_classification.py
 ```
 
 This script applies a trained image classifier to RT-DC files.
 
 For each event, the classifier assigns:
 
-- a class;
-- a classification probability.
+* a class;
+* a classification probability.
 
 Events that are excluded or cannot be classified remain unclassified.
 
 The script can also exclude events that overlap horizontally with another event in the same camera frame. This helps avoid classifying images in which two events may be touching and interfere with each other.
 
-The classification script intentionally does not create QC plots. After classification, run `example_make_QC_plots_images.py` to create stability, class-example, and class-colored scatter reports.
+The classification script intentionally does not create QC plots. After classification, run `example\\\_make\\\_QC\\\_plots\\\_images.py` to create stability, class-example, and class-colored scatter reports.
 
 ### 4.4 Classify WBC subtypes with the Kaliman25 method
 
 See:
 
 ```text
-example_Kaliman25_classification.py
+example\\\_Kaliman25\\\_classification.py
 ```
 
 The Kaliman25 classifier separates WBCs into subtypes using RT-DC measurements rather than cell images.
@@ -196,20 +189,20 @@ It can be used in two ways:
 1. directly on whole-blood data, using the original WBC-selection procedure described in the Kaliman method;
 2. after the image classifier has already identified which events are WBCs.
 
-The second option is useful when the image classifier provides a cleaner initial selection of WBCs. The classification script itself does not create plots; run `example_make_QC_plots_kaliman.py` afterwards for Kaliman25 QC.
+The second option is useful when the image classifier provides a cleaner initial selection of WBCs. The classification script itself does not create plots; run `example\\\_make\\\_QC\\\_plots\\\_Kaliman25.py` afterwards for Kaliman25 QC.
 
 ### 4.5 Generate quality-control reports
 
 Quality control is performed separately from classification. Use:
 
 ```text
-example_make_QC_plots_images.py
+example\\\_make\\\_QC\\\_plots\\\_images.py
 ```
 
 for image-classified RT-DC files, or:
 
 ```text
-example_make_QC_plots_kaliman.py
+example\\\_make\\\_QC\\\_plots\\\_kaliman.py
 ```
 
 for Kaliman25-classified files.
@@ -223,17 +216,17 @@ Both scripts recursively find matching RT-DC files and generate:
 The scatter-plot settings are controlled through lists such as:
 
 ```python
-classes_to_plot = ["RBC", "WBC", "Platelets"]
+classes\\\_to\\\_plot = \\\["RBC", "WBC", "Platelets"]
 
-plots_to_plot = [
-    ["area_um", "deform"],
-    ["area_um", "bright_avg"],
+plots\\\_to\\\_plot = \\\[
+    \\\["area\\\_um", "deform"],
+    \\\["area\\\_um", "bright\\\_avg"],
 ]
 
-n_columns = 2
+n\\\_columns = 2
 ```
 
-For large datasets, `max_points_per_class` can be used to downsample points independently within each class. `point_size` and `point_alpha` control scatter-marker appearance.
+For large datasets, `max\\\_points\\\_per\\\_class` can be used to downsample points independently within each class. `point\\\_size` and `point\\\_alpha` control scatter-marker appearance.
 
 ### 4.6 Export images for inspection or training
 
@@ -244,83 +237,83 @@ This is useful for visually checking classification results or expanding an exis
 See:
 
 ```text
-example_export_random_images_by_class.py
+example\\\_export\\\_random\\\_images\\\_by\\\_class.py
 ```
 
-## 5. Main toolbox functions
+## 5\. Main toolbox functions
 
 Most users can work directly from the example scripts without calling individual functions manually. The main functions provided by the toolbox are summarized below.
 
 ### Image preparation
 
-`preprocess_rtdc_image(...)`
+`preprocess\\\_rtdc\\\_image(...)`
 
 Prepares an event image for training or classification. It performs background subtraction and crops the image around the event.
 
-`export_preprocessed_images_from_rtdc_to_zip(...)`
+`export\\\_preprocessed\\\_images\\\_from\\\_rtdc\\\_to\\\_zip(...)`
 
 Exports preprocessed images from RT-DC files into a ZIP archive.
 
 ### Image-classifier training
 
-`train_model_on_images(...)`
+`train\\\_model\\\_on\\\_images(...)`
 
 Trains an image classifier from manually sorted training images.
 
-`load_image_model(...)`
+`load\\\_image\\\_model(...)`
 
 Loads a previously trained model.
 
 ### Image classification
 
-`classify_rtdc_images_ml(...)`
+`classify\\\_rtdc\\\_images\\\_ml(...)`
 
 Applies a trained image classifier to an RT-DC file and saves the classification results in a new RT-DC file.
 
 ### WBC classification
 
-`classify_rtdc_WBC_Kaliman25(...)`
+`classify\\\_rtdc\\\_WBC\\\_Kaliman25(...)`
 
 Classifies WBCs into subtypes using the method based on Kaliman et al. (2025).
 
 ### Class selection
 
-`make_classifier_mask(...)`
+`make\\\_classifier\\\_mask(...)`
 
 Creates a selection of events belonging to one or more classifier classes. This is useful when one classification step is used as input for another analysis.
 
 ### Quality-control reports
 
-`export_rtdc_class_stability_report(...)`
+`export\\\_rtdc\\\_class\\\_stability\\\_report(...)`
 
 Creates a plot showing how class percentages and selected RT-DC measurements change during the experiment.
 
-`export_rtdc_class_examples(...)`
+`export\\\_rtdc\\\_class\\\_examples(...)`
 
 Creates an image containing representative examples from each predicted class.
 
-`export_rtdc_class_scatter_plots(...)`
+`export\\\_rtdc\\\_class\\\_scatter\\\_plots(...)`
 
 Creates one multi-panel PNG containing class-colored scatter plots for user-selected RT-DC feature pairs. Classes can be selected by metadata name or class number. The function supports configurable subplot columns, optional probability filtering, per-class downsampling, and marker size/opacity.
 
-## 6. Installation
+## 6\. Installation
 
 The toolbox consists mainly of the two modules:
 
 ```text
-rtdc_toolbox.py
-rtdc_toolbox_ml.py
+rtdc\\\_toolbox.py
+rtdc\\\_toolbox\\\_ml.py
 ```
 
 Place them in the same folder as your analysis scripts, or somewhere on your Python path.
 
 The main required packages are:
 
-- `dclab`
-- NumPy
-- OpenCV
-- Matplotlib
-- scikit-learn
+* `dclab`
+* NumPy
+* OpenCV
+* Matplotlib
+* scikit-learn
 
 PyTorch and torchvision are additionally required for training and using image classifiers.
 
@@ -346,7 +339,7 @@ torch         2.7.0+cu126
 torchvision   0.22.0+cu126
 ```
 
-## 7. Citation
+## 7\. Citation
 
 `rtdc-toolbox` is based on:
 
@@ -363,3 +356,4 @@ The original implementation is available in the `legacy` folder.
 
 Jure Derganc  
 Institute of Biophysics, Faculty of Medicine, University of Ljubljana
+
