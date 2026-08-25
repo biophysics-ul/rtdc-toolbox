@@ -278,6 +278,8 @@ Sample_dcn_images_ml.rtdc
 
 `overwrite=False` is the safe default.
 
+Classification and quality control are intentionally separate. `example_image_classification.py` performs classification and prints classifier metadata, but it does not generate QC plots. Run `example_make_QC_plots_images.py` afterwards to create the QC reports.
+
 ## 8. Masks
 
 The `mask` argument may contain one Boolean value per RT-DC event. Only `True` events are requested for inference.
@@ -376,7 +378,7 @@ Any custom function used for inference should also be used to generate the train
 
 GPU inference still works with `num_workers=0`; only image preprocessing remains single-process.
 
-## 12. Metadata and reports
+## 12. Metadata and quality control
 
 After classification, inspect metadata with:
 
@@ -384,12 +386,30 @@ After classification, inspect metadata with:
 rtdc_toolbox.print_rtdc_classifier_metadata(output_rtdc)
 ```
 
-Create reports with:
+Quality-control plotting is intentionally kept outside the classification example. For image-classified files, run:
+
+```text
+example_make_QC_plots_images.py
+```
+
+The script recursively finds the configured classified RT-DC files and creates three complementary reports for each file:
+
+1. `<stem>_stability.png` using `export_rtdc_class_stability_report()`;
+2. `<stem>_classes.png` using `export_rtdc_class_examples()`;
+3. `<stem>_scatter.png` using `export_rtdc_class_scatter_plots()`.
+
+All three outputs are written below a configurable QC output directory while preserving the RT-DC subfolder structure.
+
+The individual report functions can also be called directly. For example:
 
 ```python
 rtdc_toolbox.export_rtdc_class_stability_report(
     path_to_rtdc=output_rtdc,
     classifier_name="default",
+    features_to_plot=("area_um", "deform", "bright_avg", "area_ratio"),
+    n_window=10_000,
+    step=1_000,
+    out_png=r"D:\RTDC\QC\Sample_stability.png",
 )
 
 rtdc_toolbox.export_rtdc_class_examples(
@@ -399,9 +419,27 @@ rtdc_toolbox.export_rtdc_class_examples(
     preprocessing_function=rtdc_toolbox.preprocess_rtdc_image,
     prob_thresh=0.95,
 )
+
+rtdc_toolbox.export_rtdc_class_scatter_plots(
+    path_to_rtdc=output_rtdc,
+    classifier_name="default",
+    classes_to_plot=["RBC", "WBC", "Platelets"],
+    plots_to_plot=[
+        ["area_um", "deform"],
+        ["area_um", "bright_avg"],
+    ],
+    n_columns=2,
+    probability_threshold=0.95,
+    max_points_per_class=10_000,
+    point_size=7,
+    point_alpha=0.75,
+    out_png=r"D:\RTDC\QC\Sample_scatter.png",
+)
 ```
 
-The report functions resolve the class and probability features from metadata instead of assuming fixed `userdefN` locations.
+The report functions resolve class and probability features from classifier metadata instead of assuming fixed `userdefN` locations. `classes_to_plot` may contain class names, class numbers, or a mixture of both. `plots_to_plot` contains `[x_feature, y_feature]` pairs, and `n_columns` controls the multi-panel layout.
+
+For Kaliman25-classified data, use `example_make_QC_plots_kaliman.py`. Kaliman25 does not produce classification probabilities, so its QC scatter plots use `probability_threshold = None`.
 
 ## 13. Practical experience
 

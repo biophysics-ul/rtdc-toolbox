@@ -37,6 +37,10 @@ The repository comprises two modules, one utility, and several example scripts d
 
 - `example_Kaliman25_classification.py` — an example script for classifying WBCs into subtypes (lymphocytes, neutrophils, etc.) using the method described by Kaliman et al. (2025), [https://doi.org/10.1016/j.bpj.2025.10.007](https://doi.org/10.1016/j.bpj.2025.10.007).
 
+- `example_make_QC_plots_images.py` — creates quality-control reports for image-classified RT-DC files. It generates acquisition/class stability plots, representative class images, and class-colored scatter plots.
+
+- `example_make_QC_plots_kaliman.py` — creates the corresponding quality-control reports for Kaliman25-classified WBC data.
+
 - `example_export_random_images_by_class.py` — an example script for exporting random images from classified RT-DC files; useful for inspecting and iteratively improving image training sets.
 
 
@@ -61,11 +65,20 @@ Classification with one classifier can serve as the basis for classification wit
 
 **Important: don't forget quality control.**
 
-At the current stage of the rtdc-toolbox framework, it is important to visually inspect the quality of each experiment and its classification. The experimental workflow is typically reliable, but occasional acquisition or classification problems can occur, and automated quality control is not yet implemented. Therefore wwe use two functions that generate image-based quality-control reports: 
+Classification and quality control are intentionally kept as separate steps. The classification examples create the classified RT-DC files and print classifier metadata; they do not generate plots. After classification, run the appropriate QC example:
 
-- `MySample_dcn_myext.png` — shows how selected features and class percentages change during the experiment. This is useful for checking experimental stability and identifying potential problems during data acquisition. This image is produced by function `export_rtdc_class_stability_report`.
+- `example_make_QC_plots_images.py` for image-classified RT-DC files;
+- `example_make_QC_plots_kaliman.py` for Kaliman25-classified RT-DC files.
 
-- `MySample_dcn_myext_classes.png` — contains example images of events from all classes and helps you visually assess whether the classification is performing as expected. This image is produces by function `export_rtdc_class_examples`.
+At the current stage of the rtdc-toolbox framework, it is important to visually inspect the quality of each experiment and its classification. The experimental workflow is typically reliable, but occasional acquisition or classification problems can occur, and automated quality control is not yet implemented. Each QC example generates three complementary PNG reports for every selected RT-DC file:
+
+- `<stem>_stability.png` — shows acquisition stability, class percentages, and selected RT-DC features over time. It is produced by `export_rtdc_class_stability_report()`.
+
+- `<stem>_classes.png` — contains representative preprocessed images from the classifier classes and helps visually assess whether the assigned classes make sense. It is produced by `export_rtdc_class_examples()`.
+
+- `<stem>_scatter.png` — shows user-selected pairs of RT-DC features as scatter plots with events colored by classifier class. It is produced by `export_rtdc_class_scatter_plots()`. The user can choose which classes and feature pairs to display, the number of subplot columns, point size/opacity, optional probability filtering, and optional per-class downsampling.
+
+The QC example scripts store these PNG files below a configurable `output_folder` and preserve the relative subfolder structure of the RT-DC data. For image classifiers, QC can apply a classification-probability threshold. Kaliman25 does not produce classification probabilities, so the Kaliman QC example uses `probability_threshold = None`.
 
 ### 2.2 Training workflow
 
@@ -166,7 +179,7 @@ Events that are excluded or cannot be classified remain unclassified.
 
 The script can also exclude events that overlap horizontally with another event in the same camera frame. This helps avoid classifying images in which two events may be touching and interfere with each other.
 
-After classification, the script automatically creates summary plots and example images so that the results can be checked visually.
+The classification script intentionally does not create QC plots. After classification, run `example_make_QC_plots_images.py` to create stability, class-example, and class-colored scatter reports.
 
 ### 4.4 Classify WBC subtypes with the Kaliman25 method
 
@@ -183,9 +196,46 @@ It can be used in two ways:
 1. directly on whole-blood data, using the original WBC-selection procedure described in the Kaliman method;
 2. after the image classifier has already identified which events are WBCs.
 
-The second option is useful when the image classifier provides a cleaner initial selection of WBCs.
+The second option is useful when the image classifier provides a cleaner initial selection of WBCs. The classification script itself does not create plots; run `example_make_QC_plots_kaliman.py` afterwards for Kaliman25 QC.
 
-### 4.5 Export images for inspection or training
+### 4.5 Generate quality-control reports
+
+Quality control is performed separately from classification. Use:
+
+```text
+example_make_QC_plots_images.py
+```
+
+for image-classified RT-DC files, or:
+
+```text
+example_make_QC_plots_kaliman.py
+```
+
+for Kaliman25-classified files.
+
+Both scripts recursively find matching RT-DC files and generate:
+
+1. a stability report;
+2. representative class images;
+3. class-colored scatter plots for user-selected feature pairs.
+
+The scatter-plot settings are controlled through lists such as:
+
+```python
+classes_to_plot = ["RBC", "WBC", "Platelets"]
+
+plots_to_plot = [
+    ["area_um", "deform"],
+    ["area_um", "bright_avg"],
+]
+
+n_columns = 2
+```
+
+For large datasets, `max_points_per_class` can be used to downsample points independently within each class. `point_size` and `point_alpha` control scatter-marker appearance.
+
+### 4.6 Export images for inspection or training
 
 The toolbox can export preprocessed event images from RT-DC files into ZIP archives.
 
@@ -248,6 +298,10 @@ Creates a plot showing how class percentages and selected RT-DC measurements cha
 `export_rtdc_class_examples(...)`
 
 Creates an image containing representative examples from each predicted class.
+
+`export_rtdc_class_scatter_plots(...)`
+
+Creates one multi-panel PNG containing class-colored scatter plots for user-selected RT-DC feature pairs. Classes can be selected by metadata name or class number. The function supports configurable subplot columns, optional probability filtering, per-class downsampling, and marker size/opacity.
 
 ## 6. Installation
 

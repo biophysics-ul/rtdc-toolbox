@@ -26,6 +26,7 @@ Metadata and reporting
     extract_rtdc_classifier_metadata
     get_classifier_metadata
     print_rtdc_classifier_metadata
+    export_rtdc_class_scatter_plots
     export_rtdc_class_stability_report
     export_rtdc_class_examples
 
@@ -75,6 +76,7 @@ __all__ = [
     "get_classifier_metadata",
     "print_rtdc_classifier_metadata",
     "make_classifier_mask",
+    "export_rtdc_class_scatter_plots",
     "export_rtdc_class_stability_report",
     "export_rtdc_class_examples",
 ]
@@ -891,6 +893,276 @@ def classify_ds_WBC_Kaliman25(
 
 
 
+
+def export_rtdc_class_scatter_plots(
+    path_to_rtdc: Union[str, Path],
+    classifier_name: str = "default",
+    classes_to_plot: Optional[Sequence[Union[int, str]]] = None,
+    plots_to_plot: Sequence[Sequence[str]] = (("area_um", "deform"),),
+    n_columns: int = 2,
+    report_ext: str = "",
+    out_png: Optional[Union[str, Path]] = None,
+    probability_threshold: Optional[float] = None,
+    probability_comparison: str = ">=",
+    max_points_per_class: Optional[int] = None,
+    random_seed: int = 0,
+    point_size: float = 5.0,
+    point_alpha: float = 0.45,
+    figsize_per_plot: Tuple[float, float] = (5.2, 4.3),
+    dpi: int = 200,
+) -> Optional[Path]:
+    """Save class-colored RT-DC scatter plots from one RTDC file to one PNG.
+
+    Parameters
+    ----------
+    path_to_rtdc:
+        Input RTDC file.
+    classifier_name:
+        Classifier stored in RTDC metadata. ``"default"`` selects the first
+        registered classifier.
+    classes_to_plot:
+        Classes to show. Values may be class numbers, class names, or a mixture
+        of both. ``None`` plots all metadata-defined classes that are present in
+        the dataset.
+    plots_to_plot:
+        Sequence of ``(x_feature, y_feature)`` pairs, for example::
+
+            [["area_um", "deform"], ["area_um", "bright_avg"]]
+
+    n_columns:
+        Number of subplot columns. The number of rows is determined
+        automatically.
+    report_ext:
+        Optional extra filename suffix inserted before ``_scatter.png`` when
+        ``out_png`` is not given. The default creates
+        ``<rtdc_stem>_scatter.png``. For example, ``report_ext="_kaliman"``
+        creates ``<rtdc_stem>_kaliman_scatter.png``.
+    out_png:
+        Optional explicit output PNG path.
+    probability_threshold:
+        Optional classifier-probability threshold. If the classifier has no
+        probability feature, the threshold is ignored. By convention class 0
+        (unclassified) is not probability-filtered.
+    probability_comparison:
+        One of ``">"``, ``">="``, ``"<"``, ``"<="``, or ``"=="``.
+    max_points_per_class:
+        Optional random downsampling limit applied independently to each class
+        in each scatter plot. ``None`` plots all available events.
+    random_seed:
+        Seed used for reproducible downsampling.
+    point_size, point_alpha:
+        Matplotlib scatter marker size and alpha.
+    figsize_per_plot:
+        Width and height in inches allocated to each subplot.
+    dpi:
+        Output PNG resolution.
+
+    Returns
+    -------
+    pathlib.Path or None
+        Saved PNG path, or ``None`` when the RTDC file contains no events.
+    """
+    rtdc_path = Path(path_to_rtdc)
+    if not rtdc_path.exists():
+        raise FileNotFoundError(f"RTDC not found: {rtdc_path}")
+
+    plot_pairs: List[Tuple[str, str]] = []
+    for pair in plots_to_plot:
+        pair = list(pair)
+        if len(pair) != 2:
+            raise ValueError(
+                "Each item in plots_to_plot must contain exactly two feature "
+                f"names, got: {pair}"
+            )
+        plot_pairs.append((str(pair[0]), str(pair[1])))
+
+    if not plot_pairs:
+        raise ValueError("plots_to_plot must contain at least one feature pair")
+
+    n_columns = int(n_columns)
+    if n_columns <= 0:
+        raise ValueError("n_columns must be > 0")
+
+    if max_points_per_class is not None:
+        max_points_per_class = int(max_points_per_class)
+        if max_points_per_class <= 0:
+            raise ValueError("max_points_per_class must be > 0 or None")
+
+    if not (0 < float(point_alpha) <= 1):
+        raise ValueError("point_alpha must be in the interval (0, 1]")
+    if float(point_size) <= 0:
+        raise ValueError("point_size must be > 0")
+
+    operators = {
+        ">": np.greater,
+        ">=": np.greater_equal,
+        "<": np.less,
+        "<=": np.less_equal,
+        "==": np.equal,
+    }
+    if probability_comparison not in operators:
+        raise ValueError("probability_comparison must be one of: >, >=, <, <=, ==")
+
+    if out_png is None:
+        report_ext = str(report_ext)
+        if report_ext.lower().endswith(".png"):
+            report_ext = report_ext[:-4]
+        if report_ext.lower().endswith("_scatter"):
+            filename = f"{rtdc_path.stem}{report_ext}.png"
+        else:
+            filename = f"{rtdc_path.stem}{report_ext}_scatter.png"
+        out_png = rtdc_path.with_name(filename)
+    else:
+        out_png = Path(out_png)
+        if out_png.suffix.lower() != ".png":
+            out_png = out_png.with_suffix(".png")
+
+    out_png = Path(out_png)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+
+    with dclab.new_dataset(str(rtdc_path)) as ds:
+        if len(ds) == 0:
+            print(f"[SKIP] {rtdc_path.name}: no events")
+            return None
+
+        classifier_info = get_classifier_metadata(ds, classifier_name)
+        resolved_classifier_name = classifier_info["classifier_name"]
+        class_feature = classifier_info["class_feature"]
+        probability_feature = classifier_info["probability_feature"]
+        class_map = classifier_info["class_map"]
+
+        if class_feature not in ds.features:
+            raise KeyError(
+                f"Class feature '{class_feature}' is missing from the RTDC dataset"
+            )
+
+        required_features = sorted({f for pair in plot_pairs for f in pair})
+        missing_features = [f for f in required_features if f not in ds.features]
+        if missing_features:
+            raise KeyError(
+                "The following requested RTDC features are missing: "
+                + ", ".join(missing_features)
+            )
+
+        labels = np.asarray(ds[class_feature], dtype=int)
+        present_class_values = set(int(v) for v in np.unique(labels))
+
+        if classes_to_plot is None:
+            class_values = [
+                int(value)
+                for value in class_map
+                if int(value) in present_class_values
+            ]
+        else:
+            class_values = _resolve_class_values(class_map, classes_to_plot)
+
+        if not class_values:
+            raise ValueError("No classes were selected for plotting")
+
+        feature_data = {
+            feature: np.asarray(ds[feature], dtype=float)
+            for feature in required_features
+        }
+
+        probability = None
+        if probability_threshold is not None and probability_feature is not None:
+            if probability_feature not in ds.features:
+                raise KeyError(
+                    f"Probability feature '{probability_feature}' is missing from the RTDC dataset"
+                )
+            probability = np.asarray(ds[probability_feature], dtype=float)
+
+    n_plots = len(plot_pairs)
+    n_cols_used = min(n_columns, n_plots)
+    n_rows = int(np.ceil(n_plots / n_cols_used))
+
+    fig_w = float(figsize_per_plot[0]) * n_cols_used
+    fig_h = float(figsize_per_plot[1]) * n_rows + 0.55
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols_used,
+        figsize=(fig_w, fig_h),
+        squeeze=False,
+    )
+    axes_flat = axes.ravel()
+
+    cmap = plt.get_cmap("tab10" if len(class_values) <= 10 else "tab20")
+    class_colors = {
+        class_value: cmap(int(class_value) % cmap.N)
+        for class_value in class_values
+    }
+
+    rng = np.random.default_rng(int(random_seed))
+    comparison_fn = operators[probability_comparison]
+
+    for plot_idx, (x_feature, y_feature) in enumerate(plot_pairs):
+        ax = axes_flat[plot_idx]
+        x = feature_data[x_feature]
+        y = feature_data[y_feature]
+
+        for class_value in class_values:
+            mask = labels == int(class_value)
+
+            if probability is not None and int(class_value) != 0:
+                mask &= (
+                    np.isfinite(probability)
+                    & comparison_fn(probability, float(probability_threshold))
+                )
+
+            mask &= np.isfinite(x) & np.isfinite(y)
+            indices = np.flatnonzero(mask)
+
+            n_available = int(indices.size)
+            if max_points_per_class is not None and n_available > max_points_per_class:
+                indices = rng.choice(
+                    indices,
+                    size=max_points_per_class,
+                    replace=False,
+                )
+
+            if indices.size == 0:
+                continue
+
+            class_name = class_map.get(int(class_value), str(int(class_value)))
+            label = f"{class_name} ({int(class_value)}), N={n_available:,}"
+
+            ax.scatter(
+                x[indices],
+                y[indices],
+                s=float(point_size),
+                alpha=float(point_alpha),
+                color=class_colors[class_value],
+                edgecolors="none",
+                rasterized=True,
+                label=label,
+            )
+
+        ax.set_xlabel(x_feature)
+        ax.set_ylabel(y_feature)
+        ax.set_title(f"{x_feature} vs {y_feature}")
+        ax.grid(True, alpha=0.20)
+        ax.legend(fontsize=8, frameon=True, markerscale=1.8)
+
+    for ax in axes_flat[n_plots:]:
+        ax.axis("off")
+
+    title = f"{rtdc_path.name} | classifier='{resolved_classifier_name}'"
+    if probability is not None:
+        title += (
+            f" | p {probability_comparison} {float(probability_threshold):g}"
+            " (class 0 unfiltered)"
+        )
+    if max_points_per_class is not None:
+        title += f" | max {max_points_per_class:,} plotted points/class"
+
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_png, dpi=int(dpi), bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Saved scatter plot report: {out_png}")
+    return out_png
+
 def export_rtdc_class_stability_report(
     path_to_rtdc: Union[str, Path],
     classifier_name: Optional[str] = "default",
@@ -983,7 +1255,7 @@ def export_rtdc_class_stability_report(
         }
 
         # First-row acquisition QC features, independent of classifier.
-        overview_features = ["temp", "bright_bc_avg", "pos_y"]
+        overview_features = ["temp", "bright_bc_avg", "flow_rate", "pos_y"]
         overview_arr = {
             f: (
                 np.asarray(ds[f], float)

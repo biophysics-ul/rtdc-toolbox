@@ -1,4 +1,4 @@
-"""Example: Kaliman25 WBC classification and reports.
+"""Example: Kaliman25 WBC classification only.
 
 Set USE_IMAGE_SELECTED_WBCS to choose between two workflows:
 
@@ -10,6 +10,9 @@ True:
     Read WBCs from the selected input RTDC file and pass that mask to Kaliman25
     with preselected_wbcs=True. Kaliman Step 1 is skipped and the image-selected
     WBCs enter directly at Step 2.
+
+Quality-control plots are intentionally kept in the separate example script
+``example_make_QC_plots_kaliman.py``.
 
 rtdc-toolbox framework version 2.0 (August 2026)
 """
@@ -26,19 +29,7 @@ def find_unclassified_rtdc_files(
     input_extension: str,
     kaliman_extension: str,
 ) -> list[Path]:
-    """
-    Find input RTDC files that do not yet have a Kaliman-classified result.
-
-    Example:
-        input_extension   = "_dcn_b7c"
-        kaliman_extension = "_kaliman25"
-
-    searches for:
-        *_dcn_b7c.rtdc
-
-    and skips files for which this already exists:
-        *_dcn_b7c_kaliman25.rtdc
-    """
+    """Find input RTDC files that do not yet have a Kaliman-classified result."""
     folder = Path(folder)
 
     return sorted(
@@ -68,6 +59,9 @@ extension_kaliman_rtdc = "_kaliman25"
 
 USE_IMAGE_SELECTED_WBCS = True
 WBC_PROBABILITY_THRESHOLD = 0.90
+
+# Existing Kaliman RTDC files are replaced when True.
+overwrite = True
 
 
 # =============================================================================
@@ -119,27 +113,9 @@ for i, path_to_rtdc in enumerate(unclassified_rtdc_list, start=1):
         mask_description=mask_description,
         preselected_wbcs=preselected_wbcs,
         output_suffix=extension_kaliman_rtdc,
-        overwrite=True,
+        overwrite=overwrite,
         verbose=True,
     )
 
     print("\nKaliman25-classifier metadata:\n", flush=True)
     rtdc_toolbox.print_rtdc_classifier_metadata(kaliman_rtdc)
-
-    rtdc_toolbox.export_rtdc_class_stability_report(
-        path_to_rtdc=kaliman_rtdc,
-        classifier_name="Kaliman25_WBC",
-        features_to_plot=("area_um", "deform", "bright_avg", "area_ratio"),
-        n_window=10_000,
-        step=1_000,
-    )
-
-    rtdc_toolbox.export_rtdc_class_examples(
-        path_to_rtdc=kaliman_rtdc,
-        classifier_name="Kaliman25_WBC",
-        report_ext="_classes",
-        N_img=40,
-        preprocessing_function=rtdc_toolbox.preprocess_rtdc_image,
-        randomize=True,
-        n_rows=4,
-    )
