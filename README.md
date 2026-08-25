@@ -323,7 +323,7 @@ A typical installation of the non-PyTorch dependencies is:
 pip install numpy opencv-python dclab tqdm matplotlib scikit-learn pillow
 ```
 
-For PyTorch, use the installation instructions provided on the official PyTorch website, because the recommended version depends on your operating system and GPU.
+For PyTorch, use the installation instructions provided on the [official PyTorch website](https://pytorch.org/get-started/locally/), because the recommended version depends on your operating system and GPU.
 
 Versions used successfully during development included:
 
