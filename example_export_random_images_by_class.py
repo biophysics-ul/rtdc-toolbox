@@ -10,14 +10,15 @@ import rtdc_toolbox
 # USER SETTINGS
 # =============================================================================
 
-INPUT_FOLDER = Path(r"Z:\KK_Staro\Brez")
-EXPORT_FOLDER = Path(r"D:\RTDC\ExportedClassesStaroBrez")
+INPUT_FOLDER = Path(r"Z:\KK")
+EXPORT_FOLDER = Path(r"Z:\KK\Training\Set_2026_08_25_Above")
 
 FILE_SUFFIX = "_dcn_b7c.rtdc"
 CLASSIFIER_NAME = "default"
 
-N_IMAGES_PER_CLASS = 100
+N_IMAGES_PER_CLASS = 200
 PROBABILITY_THRESHOLD = 0.95
+EXPORT_ABOVE_THRESHOLD = True
 
 
 # =============================================================================
@@ -49,20 +50,26 @@ for rtdc_path in rtdc_files:
 
     for class_id, class_name in class_map.items():
 
+        if EXPORT_ABOVE_THRESHOLD:
+            probability_mask = probabilities > PROBABILITY_THRESHOLD
+            threshold_text = f"above p>{PROBABILITY_THRESHOLD:g}"
+        else:
+            probability_mask = probabilities < PROBABILITY_THRESHOLD
+            threshold_text = f"below p<{PROBABILITY_THRESHOLD:g}"
+        
         mask = (
             (classes == int(class_id))
-            & (probabilities > PROBABILITY_THRESHOLD)
-        )
-
+            & probability_mask
+            )
+        
         n_available = int(mask.sum())
 
         if n_available == 0:
             continue
 
         print(
-            f"  {class_name}: {n_available:,} events above "
-            f"p>{PROBABILITY_THRESHOLD:g}"
-        )
+            f"  {class_name}: {n_available:,} events {threshold_text}"
+            )
 
         rtdc_toolbox.export_preprocessed_images_from_rtdc_to_zip(
             rtdc_path=rtdc_path,
