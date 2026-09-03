@@ -1177,7 +1177,13 @@ def export_rtdc_class_stability_report(
       - number of events per ``n_window`` frames,
       - temperature (``temp``),
       - background-corrected brightness (``bright_bc_avg``),
+      - sample and sheath flow rates from the ``cskernel_monitor`` table,
       - lateral position (``pos_y``).
+
+    The flow-rate traces are read from the table columns
+    ``flow_rate_sample`` and ``flow_rate_sheath``. The function searches the
+    current RTDC file first and then follows basin links, which is important for
+    classified RTDC files that inherit the original acquisition data via a basin.
 
     Remaining rows show, for each class:
       - percentage of events in the class,
@@ -1213,6 +1219,55 @@ def export_rtdc_class_stability_report(
                 break
             i += st
         return out
+
+    def find_table(ds, table_name, seen=None):
+        """Return a table from ds or recursively from one of its basins."""
+        if seen is None:
+            seen = set()
+
+        ds_id = id(ds)
+        if ds_id in seen:
+            return None
+        seen.add(ds_id)
+
+        try:
+            table_names = list(ds.tables)
+        except Exception:
+            table_names = []
+
+        # Exact name first. ``source_...`` is used by some dclab exports.
+        candidates = [table_name, f"source_{table_name}"]
+        candidates.extend(
+            name
+            for name in table_names
+            if str(name).lower().endswith(table_name.lower())
+            and name not in candidates
+        )
+
+        for name in candidates:
+            if name in table_names:
+                try:
+                    return np.asarray(ds.tables[name])
+                except Exception:
+                    pass
+
+        # Classified RTDC files in this framework are basin-linked to the
+        # original acquisition file, where the monitor table normally lives.
+        try:
+            basins = list(ds.basins)
+        except Exception:
+            basins = []
+
+        for basin in basins:
+            try:
+                basin_ds = basin.ds
+            except Exception:
+                continue
+            table = find_table(basin_ds, table_name, seen=seen)
+            if table is not None:
+                return table
+
+        return None
 
     with dclab.new_dataset(rtdc_path) as ds:
         t = get_time(ds)
@@ -1253,8 +1308,9 @@ def export_rtdc_class_stability_report(
             for f in features_to_plot
         }
 
-        # First-row acquisition QC features, independent of classifier.
-        overview_features = ["temp", "bright_bc_avg", "flow_rate", "pos_y"]
+        # First-row event features, independent of classifier. Flow rate is NOT
+        # an event feature; it is handled separately from cskernel_monitor below.
+        overview_features = ["temp", "bright_bc_avg", "pos_y"]
         overview_arr = {
             f: (
                 np.asarray(ds[f], float)
@@ -1263,6 +1319,57 @@ def export_rtdc_class_stability_report(
             )
             for f in overview_features
         }
+
+        # Read native acquisition-monitor traces from the RTDC table.
+        monitor = find_table(ds, "cskernel_monitor")
+        monitor_time = None
+        flow_rate_sample = None
+        flow_rate_sheath = None
+        monitor_time_interpolated = False
+
+        if monitor is not None and monitor.size:
+            names = monitor.dtype.names or ()
+            name_map = {str(name).lower(): name for name in names}
+
+            if "flow_rate_sample" in name_map:
+                flow_rate_sample = np.asarray(
+                    monitor[name_map["flow_rate_sample"]], float
+                )
+            if "flow_rate_sheath" in name_map:
+                flow_rate_sheath = np.asarray(
+                    monitor[name_map["flow_rate_sheath"]], float
+                )
+
+            # cskernel_monitor normally contains its own time column. Keep a few
+            # sensible fallbacks for files produced by different software versions.
+            for candidate in (
+                "time",
+                "time_s",
+                "time_sec",
+                "time_seconds",
+                "elapsed_time",
+                "measurement_time",
+                "timestamp",
+            ):
+                if candidate in name_map:
+                    monitor_time = np.asarray(monitor[name_map[candidate]], float)
+                    break
+
+            # If no monitor time column is available, align the monitor samples
+            # uniformly to the event-time span rather than pretending they are
+            # per-event values.
+            if monitor_time is None and len(monitor):
+                finite_t = t[np.isfinite(t)]
+                if finite_t.size:
+                    monitor_time = np.linspace(
+                        float(np.min(finite_t)),
+                        float(np.max(finite_t)),
+                        len(monitor),
+                    )
+                    monitor_time_interpolated = True
+                else:
+                    monitor_time = np.arange(len(monitor), dtype=float)
+                    monitor_time_interpolated = True
 
         # Event-count stability is evaluated in frame windows.
         if "frame" in ds.features:
@@ -1301,7 +1408,8 @@ def export_rtdc_class_stability_report(
 
         classes = np.unique(cls)
 
-        n_overview_cols = 1 + len(overview_features)  # event count + 3 QC features
+        # Overview: event count + temp + bright_bc_avg + flow rates + pos_y.
+        n_overview_cols = 5
         n_class_cols = 1 + len(features_to_plot)
         n_cols = max(n_overview_cols, n_class_cols)
         n_rows = 1 + len(classes)
@@ -1332,8 +1440,8 @@ def export_rtdc_class_stability_report(
         ax.set_ylabel("N events")
         ax.grid(True, alpha=0.25)
 
-        # temp, bright_bc_avg, pos_y: all-event mean ± SD over time.
-        for ci, f in enumerate(overview_features, start=1):
+        # temp and bright_bc_avg: all-event mean ± SD over time.
+        for ci, f in enumerate(("temp", "bright_bc_avg"), start=1):
             ax = axes[0, ci]
             vals = overview_arr[f]
 
@@ -1378,6 +1486,98 @@ def export_rtdc_class_stability_report(
             ax.set_title(f"All events: {f}")
             ax.set_ylabel(f)
             ax.grid(True, alpha=0.25)
+
+        # Sample + sheath flow rates from cskernel_monitor, plotted at the
+        # table's native temporal resolution (not averaged in event windows).
+        ax = axes[0, 3]
+        flow_plotted = False
+
+        if monitor_time is not None:
+            if flow_rate_sample is not None:
+                finite = np.isfinite(monitor_time) & np.isfinite(flow_rate_sample)
+                if np.any(finite):
+                    avg = np.nanmean(flow_rate_sample[finite])
+                    ax.plot(
+                        monitor_time[finite],
+                        flow_rate_sample[finite],
+                        label=f"sample (avg={avg:.3g})",
+                    )
+                    flow_plotted = True
+
+            if flow_rate_sheath is not None:
+                finite = np.isfinite(monitor_time) & np.isfinite(flow_rate_sheath)
+                if np.any(finite):
+                    avg = np.nanmean(flow_rate_sheath[finite])
+                    ax.plot(
+                        monitor_time[finite],
+                        flow_rate_sheath[finite],
+                        label=f"sheath (avg={avg:.3g})",
+                    )
+                    flow_plotted = True
+
+        title = "Flow rate: sample + sheath"
+        if monitor_time_interpolated:
+            title += " (time aligned)"
+        ax.set_title(title)
+        ax.set_ylabel("Flow rate")
+        ax.grid(True, alpha=0.25)
+
+        if flow_plotted:
+            ax.legend(fontsize=8)
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "cskernel_monitor flow-rate data not found",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=8,
+            )
+
+        # pos_y remains an event feature and is plotted as mean ± SD.
+        ax = axes[0, 4]
+        vals = overview_arr["pos_y"]
+        means = np.full(len(win), np.nan, float)
+        sds = np.full(len(win), np.nan, float)
+
+        for wi, s in enumerate(win):
+            v = vals[s]
+            if v.size:
+                means[wi] = np.nanmean(v)
+                sds[wi] = np.nanstd(v)
+
+        overall = np.nanmean(vals)
+        if np.isfinite(overall):
+            ax.axhline(overall, color="red", lw=1, alpha=0.8)
+            ax.text(
+                0.98,
+                0.98,
+                f"avg={overall:.3g}",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                color="red",
+                fontsize=8,
+                bbox=dict(
+                    boxstyle="round,pad=0.2",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.7,
+                ),
+            )
+
+        ax.plot(t_centers, means)
+        if np.isfinite(sds).any():
+            ax.fill_between(
+                t_centers,
+                means - sds,
+                means + sds,
+                alpha=0.2,
+            )
+        ax.set_title("All events: pos_y")
+        ax.set_ylabel("pos_y")
+        ax.grid(True, alpha=0.25)
 
         # Hide any unused cells in the first row.
         for ci in range(n_overview_cols, n_cols):
@@ -1510,7 +1710,6 @@ def export_rtdc_class_stability_report(
             plt.close(fig)
             print(f"[FAIL] Could not save {out_png}: {e}")
             return None
-
 
 def export_rtdc_class_examples(
     path_to_rtdc: Union[str, Path],
