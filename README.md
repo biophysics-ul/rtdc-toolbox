@@ -266,9 +266,6 @@ FILTERS = [
 
 All filters are combined with **AND**. In the example above, an event is exported only if `userdef3 == 21` **and** `area_um < 30`.
 
-
-`N_IMAGES_PER_FILE` specifies the maximum number of randomly selected matching events exported from each RT-DC file. All selected images are appended to the ZIP specified by `ZIP_PATH`.
-
 Both export examples ultimately use:
 
 ```python
