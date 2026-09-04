@@ -116,7 +116,8 @@ def preprocess_rtdc_image(
         Must provide "image", "image_bg", "frame", "contour".
     
     event_idx : int
-        Index of the event to preprocess.
+        Zero-based Python event position used for array access. This is not the
+        one-based RT-DC ``index`` feature shown to users.
     extra_pixels : int
         Padding (in pixels) to add left/right of the contour.
     no_overlap : bool
@@ -340,10 +341,13 @@ def export_preprocessed_images_from_rtdc_to_zip(
                 ok, buf = cv.imencode(ext, img)
 
                 if not ok:
-                    print(f"WARNING: cv.imencode failed for event {i}")
+                    print(
+                        f"WARNING: cv.imencode failed for RTDC event "
+                        f"{int(ds['index'][i])}"
+                    )
                     continue
 
-                filename = f"{base_name}-{i}{ext}"
+                filename = f"{base_name}-{int(ds['index'][i])}{ext}"
                 zipf.writestr(filename, buf.tobytes())
                 n_written += 1
 
@@ -2125,8 +2129,8 @@ def export_rtdc_class_examples(
                         im_pil = Image.fromarray(im_np, mode="L")
                         tile.paste(im_pil, (0, 0))
 
-                        # overlay event index in upper-right
-                        sidx = str(idx)
+                        # Overlay the user-visible RT-DC/dclab index.
+                        sidx = str(int(ds["index"][idx]))
                         tw, th = _text_wh(ddraw, sidx, font_event)
                         tx = max(0, tile_w - event_inset_x_px - tw)
                         ty = max(0, event_inset_y_px)
