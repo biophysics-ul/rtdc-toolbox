@@ -37,6 +37,7 @@ The repository comprises two modules, one utility, and several example scripts d
 * `example_make_QC_plots_images.py` — creates quality-control reports for image-classified RT-DC files. It generates acquisition/class stability plots, representative class images, and class-colored scatter plots.
 * `example_make_QC_plots_Kaliman25.py` — creates the corresponding quality-control reports for Kaliman25-classified WBC data.
 * `example_export_random_images_by_class.py` — an example script for exporting random images from classified RT-DC files; useful for inspecting and iteratively improving image training sets.
+* `example_export_random_filtered_images.py` — exports random preprocessed images from multiple RT-DC files into one ZIP archive after applying user-defined filters to arbitrary RT-DC features (for example `userdef3 == 21` and `area_um < 30`).
 
 
 
@@ -76,7 +77,7 @@ The QC example scripts store these PNG files below a configurable `output_folder
 
 ### 2.2 Training workflow
 
-To train your own image-classification model you first need a good training set. The easiest way is to export random images from your RT-DC files (see `example_export_random_images_by_class.py`), sort them manually into class folders, and then run the training script (see `example_train_image_model.py`). Folder names define the class names used by the model. In Windows, manual sorting is straightforward in File Explorer when using View → Large icons.  Once you have trained an initial image-classification model, you can use it to classify your RT-DC files. You can then export representative images from each predicted class, inspect them manually, and add suitable images to the training set. Usually you can get a quality training set containing a few thousand images per class after a couple of iterations.
+To train your own image-classification model you first need a good training set. The easiest way is to export random images from your RT-DC files, sort them manually into class folders, and then run the training script (see `example_train_image_model.py`). Use `example_export_random_images_by_class.py` when you want to export images according to classifier classes, or `example_export_random_filtered_images.py` when you want to select events with arbitrary RT-DC feature filters. Folder names define the class names used by the model. In Windows, manual sorting is straightforward in File Explorer when using View → Large icons. Once you have trained an initial image-classification model, you can use it to classify your RT-DC files. You can then export representative or specifically filtered images, inspect them manually, and add suitable images to the training set. Usually you can get a quality training set containing a few thousand images per class after a couple of iterations.
 
 
 
@@ -230,15 +231,51 @@ For large datasets, `max_points_per_class` can be used to downsample points inde
 
 ### 4.6 Export images for inspection or training
 
-The toolbox can export preprocessed event images from RT-DC files into ZIP archives.
+The toolbox can export preprocessed event images from RT-DC files into ZIP archives. This is useful for visually checking classification results, selecting unusual event populations, or expanding an existing training set.
 
-This is useful for visually checking classification results or expanding an existing training set.
+Two example scripts are provided.
+
+#### Export random images by classifier class
 
 See:
 
 ```text
 example_export_random_images_by_class.py
 ```
+
+This script reads classifier metadata, selects events from individual classifier classes, optionally applies a classification-probability threshold, and exports random examples from each class.
+
+#### Export random images using arbitrary feature filters
+
+See:
+
+```text
+example_export_random_filtered_images.py
+```
+
+This script recursively finds RT-DC files with a selected filename suffix, applies user-defined filters directly to RT-DC features, and appends random matching images from all files to one ZIP archive.
+
+For example:
+
+```python
+FILTERS = [
+    ("userdef3", "==", 21),
+    ("area_um", "<", 30),
+]
+```
+
+All filters are combined with **AND**. In the example above, an event is exported only if `userdef3 == 21` **and** `area_um < 30`.
+
+
+`N_IMAGES_PER_FILE` specifies the maximum number of randomly selected matching events exported from each RT-DC file. All selected images are appended to the ZIP specified by `ZIP_PATH`.
+
+Both export examples ultimately use:
+
+```python
+rtdc_toolbox.export_preprocessed_images_from_rtdc_to_zip(...)
+```
+
+so the same image preprocessing is used as elsewhere in the framework.
 
 ## 5\. Main toolbox functions
 
