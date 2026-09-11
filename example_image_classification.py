@@ -39,11 +39,11 @@ def main() -> None:
     # USER SETTINGS
     # =========================================================================
 
-    main_folder_with_rtdc = r"Z:\KK"
+    main_folder_with_rtdc = r"Z:\KK\RTDC"
     extension_segmented_rtdc = "_dcn"
     extension_classified_rtdc = "_b7c"
 
-    path_to_model = r"D:\RTDC\Training\Models\Blood_7classes_July_2026.pt"
+    path_to_model = r"Z:\KK\Training\Models\Blood_7classes_July_2026.pt"
     classifier_name = "Blood_7classes_July_2026"
 
     overwrite = True

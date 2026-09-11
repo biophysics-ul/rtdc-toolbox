@@ -899,15 +899,14 @@ def classify_ds_WBC_Kaliman25(
 
 
 def export_rtdc_class_scatter_plots(
-    path_to_rtdc: Union[str, Path],
+    rtdc_path: Union[str, Path],
+    output_png_path: Union[str, Path],
     classifier_name: str = "default",
     classes_to_plot: Optional[Sequence[Union[int, str]]] = None,
     plots_to_plot: Sequence[Sequence[str]] = (("area_um", "deform"),),
     n_columns: int = 2,
-    report_ext: str = "",
-    out_png: Optional[Union[str, Path]] = None,
     probability_threshold: Optional[float] = None,
-    probability_comparison: str = ">=",
+    keep_above_threshold: bool = True,
     max_points_per_class: Optional[int] = None,
     random_seed: int = 0,
     point_size: float = 5.0,
@@ -919,8 +918,11 @@ def export_rtdc_class_scatter_plots(
 
     Parameters
     ----------
-    path_to_rtdc:
+    rtdc_path:
         Input RTDC file.
+    output_png_path:
+        Exact output PNG path. The filename and folder must be defined by the
+        caller; this function does not derive or modify the output filename.
     classifier_name:
         Classifier stored in RTDC metadata. ``"default"`` selects the first
         registered classifier.
@@ -936,19 +938,14 @@ def export_rtdc_class_scatter_plots(
     n_columns:
         Number of subplot columns. The number of rows is determined
         automatically.
-    report_ext:
-        Optional extra filename suffix inserted before ``_scatter.png`` when
-        ``out_png`` is not given. The default creates
-        ``<rtdc_stem>_scatter.png``. For example, ``report_ext="_kaliman"``
-        creates ``<rtdc_stem>_kaliman_scatter.png``.
-    out_png:
-        Optional explicit output PNG path.
     probability_threshold:
-        Optional classifier-probability threshold. If the classifier has no
-        probability feature, the threshold is ignored. By convention class 0
-        (unclassified) is not probability-filtered.
-    probability_comparison:
-        One of ``">"``, ``">="``, ``"<"``, ``"<="``, or ``"=="``.
+        Optional classifier-probability threshold. ``None`` disables
+        probability filtering. If the classifier has no probability feature,
+        the threshold is ignored. By convention class 0 (unclassified) is not
+        probability-filtered.
+    keep_above_threshold:
+        If True, keep events with probability >= ``probability_threshold``.
+        If False, keep events with probability < ``probability_threshold``.
     max_points_per_class:
         Optional random downsampling limit applied independently to each class
         in each scatter plot. ``None`` plots all available events.
@@ -966,9 +963,15 @@ def export_rtdc_class_scatter_plots(
     pathlib.Path or None
         Saved PNG path, or ``None`` when the RTDC file contains no events.
     """
-    rtdc_path = Path(path_to_rtdc)
+    rtdc_path = Path(rtdc_path)
+    output_png_path = Path(output_png_path)
+
     if not rtdc_path.exists():
         raise FileNotFoundError(f"RTDC not found: {rtdc_path}")
+    if output_png_path.suffix.lower() != ".png":
+        raise ValueError("output_png_path must end with '.png'")
+
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
 
     plot_pairs: List[Tuple[str, str]] = []
     for pair in plots_to_plot:
@@ -997,32 +1000,6 @@ def export_rtdc_class_scatter_plots(
     if float(point_size) <= 0:
         raise ValueError("point_size must be > 0")
 
-    operators = {
-        ">": np.greater,
-        ">=": np.greater_equal,
-        "<": np.less,
-        "<=": np.less_equal,
-        "==": np.equal,
-    }
-    if probability_comparison not in operators:
-        raise ValueError("probability_comparison must be one of: >, >=, <, <=, ==")
-
-    if out_png is None:
-        report_ext = str(report_ext)
-        if report_ext.lower().endswith(".png"):
-            report_ext = report_ext[:-4]
-        if report_ext.lower().endswith("_scatter"):
-            filename = f"{rtdc_path.stem}{report_ext}.png"
-        else:
-            filename = f"{rtdc_path.stem}{report_ext}_scatter.png"
-        out_png = rtdc_path.with_name(filename)
-    else:
-        out_png = Path(out_png)
-        if out_png.suffix.lower() != ".png":
-            out_png = out_png.with_suffix(".png")
-
-    out_png = Path(out_png)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
 
     with dclab.new_dataset(str(rtdc_path)) as ds:
         if len(ds) == 0:
@@ -1097,7 +1074,6 @@ def export_rtdc_class_scatter_plots(
     }
 
     rng = np.random.default_rng(int(random_seed))
-    comparison_fn = operators[probability_comparison]
 
     for plot_idx, (x_feature, y_feature) in enumerate(plot_pairs):
         ax = axes_flat[plot_idx]
@@ -1108,10 +1084,15 @@ def export_rtdc_class_scatter_plots(
             mask = labels == int(class_value)
 
             if probability is not None and int(class_value) != 0:
-                mask &= (
-                    np.isfinite(probability)
-                    & comparison_fn(probability, float(probability_threshold))
-                )
+                finite_probability = np.isfinite(probability)
+                if keep_above_threshold:
+                    mask &= finite_probability & (
+                        probability >= float(probability_threshold)
+                    )
+                else:
+                    mask &= finite_probability & (
+                        probability < float(probability_threshold)
+                    )
 
             mask &= np.isfinite(x) & np.isfinite(y)
             indices = np.flatnonzero(mask)
@@ -1152,8 +1133,9 @@ def export_rtdc_class_scatter_plots(
 
     title = f"{rtdc_path.name} | classifier='{resolved_classifier_name}'"
     if probability is not None:
+        comparison_text = ">=" if keep_above_threshold else "<"
         title += (
-            f" | p {probability_comparison} {float(probability_threshold):g}"
+            f" | p {comparison_text} {float(probability_threshold):g}"
             " (class 0 unfiltered)"
         )
     if max_points_per_class is not None:
@@ -1161,21 +1143,24 @@ def export_rtdc_class_scatter_plots(
 
     fig.suptitle(title, fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(out_png, dpi=int(dpi), bbox_inches="tight")
+    fig.savefig(output_png_path, dpi=int(dpi), bbox_inches="tight")
     plt.close(fig)
 
-    return out_png
+    return output_png_path
 
 def export_rtdc_class_stability_report(
-    path_to_rtdc: Union[str, Path],
+    rtdc_path: Union[str, Path],
+    output_png_path: Union[str, Path],
     classifier_name: Optional[str] = "default",
     features_to_plot: Sequence[str] = ("area_um", "deform"),
     n_window: int = 10000,
     step: int = 1000,
-    out_png: Optional[Union[str, Path]] = None,
 ) -> Optional[Path]:
     """
     Analyze one RTDC file and save a PNG stability report.
+
+    ``rtdc_path`` and ``output_png_path`` are exact paths supplied by the caller;
+    the function does not derive or modify the output filename.
 
     The first row gives classifier-independent acquisition QC:
       - number of events per ``n_window`` frames,
@@ -1197,13 +1182,16 @@ def export_rtdc_class_stability_report(
     concrete classifier name to select it explicitly, or ``None`` to analyze
     all events as one group.
     """
-    rtdc_path = Path(path_to_rtdc)
-    if not rtdc_path.exists():
-        print(f"[SKIP] RTDC not found: {rtdc_path}")
-        return None
+    rtdc_path = Path(rtdc_path)
+    output_png_path = Path(output_png_path)
 
+    if not rtdc_path.exists():
+        raise FileNotFoundError(f"RTDC not found: {rtdc_path}")
+    if output_png_path.suffix.lower() != ".png":
+        raise ValueError("output_png_path must end with '.png'")
+
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
     features_to_plot = list(features_to_plot)
-    out_png = Path(out_png) if out_png is not None else rtdc_path.with_suffix(".png")
 
     def get_time(ds):
         return (
@@ -1707,23 +1695,23 @@ def export_rtdc_class_stability_report(
         fig.tight_layout(rect=[0, 0, 1, 0.98])
 
         try:
-            fig.savefig(out_png, dpi=200)
+            fig.savefig(output_png_path, dpi=200)
             plt.close(fig)
-            return out_png
+            return output_png_path
         except Exception as e:
             plt.close(fig)
-            print(f"[FAIL] Could not save {out_png}: {e}")
+            print(f"[FAIL] Could not save {output_png_path}: {e}")
             return None
 
 def export_rtdc_class_examples(
-    path_to_rtdc: Union[str, Path],
+    rtdc_path: Union[str, Path],
+    output_png_path: Union[str, Path],
     classifier_name: str = "default",
-    report_ext: str = "_classes",
     N_img: int = 30,
     preprocessing_function=None,
     randomize: bool = True,
-    prob_thresh: float = 0.9,
-    keep_above_thresh: bool = True,
+    probability_threshold: Optional[float] = None,
+    keep_above_threshold: bool = True,
     n_rows: int = 2,
     # --- new fine-tuning parameters ---
     title_font_size: int = 16,
@@ -1741,9 +1729,14 @@ def export_rtdc_class_examples(
     """
     Create a PNG report showing example preprocessed cell images for each class.
 
-    Probability filtering is applied to classified classes only. Class 0 is the
-    metadata-defined unclassified class and normally has probability 0, so its
-    examples are always sampled without applying ``prob_thresh``.
+    Probability filtering is applied to classified classes only. ``None`` for
+    ``probability_threshold`` disables filtering. If ``keep_above_threshold`` is
+    True, events with probability >= the threshold are kept; otherwise events
+    with probability < the threshold are kept. Class 0 is always sampled without
+    probability filtering.
+
+    ``rtdc_path`` and ``output_png_path`` are exact paths supplied by the caller;
+    the function does not derive or modify the output filename.
 
     Uses PIL for pixel-exact spacing and overlay text.
 
@@ -1758,10 +1751,15 @@ def export_rtdc_class_examples(
     from PIL import Image, ImageDraw, ImageFont
     import textwrap
 
-    rtdc_path = Path(path_to_rtdc)
+    rtdc_path = Path(rtdc_path)
+    output_png_path = Path(output_png_path)
+
     if not rtdc_path.exists():
-        print(f"[SKIP] RTDC not found: {rtdc_path}")
-        return None
+        raise FileNotFoundError(f"RTDC not found: {rtdc_path}")
+    if output_png_path.suffix.lower() != ".png":
+        raise ValueError("output_png_path must end with '.png'")
+
+    output_png_path.parent.mkdir(parents=True, exist_ok=True)
 
     if preprocessing_function is None:
         preprocessing_function = preprocess_rtdc_image
@@ -1786,14 +1784,9 @@ def export_rtdc_class_examples(
     event_inset_y_px = max(0, int(event_inset_y_px))
     event_text_bg_pad_px = max(0, int(event_text_bg_pad_px))
 
-    # Output name: "<stem><report_ext>.png"
-    stem = rtdc_path.name
-    if stem.lower().endswith(".rtdc"):
-        stem = stem[:-5]
-    out_png = rtdc_path.with_name(f"{stem}{report_ext}.png")
-
     # Resolve features and class names from metadata using classifier_name.
     classifier_info = get_classifier_metadata(str(rtdc_path), classifier_name)
+    resolved_classifier_name = classifier_info["classifier_name"]
     class_feature = classifier_info["class_feature"]
     prob_feature = classifier_info["probability_feature"]
     class_names_meta = classifier_info["class_map"]
@@ -1888,9 +1881,12 @@ def export_rtdc_class_examples(
         cls = np.asarray(ds[class_feature], dtype=int)
         classes = np.unique(cls)
 
-        if prob_feature is None:
-            # Classifier has no probability output: include every image in each class.
-            have_prob = False
+        have_prob = prob_feature is not None
+        probability_filter_enabled = bool(
+            have_prob and probability_threshold is not None
+        )
+
+        if not have_prob:
             above = np.zeros(n_total, dtype=bool)
             below = np.zeros(n_total, dtype=bool)
             sel_mask = np.ones(n_total, dtype=bool)
@@ -1898,12 +1894,17 @@ def export_rtdc_class_examples(
             if str(prob_feature) not in ds.features:
                 print(f"[SKIP] {rtdc_path.name}: probability feature '{prob_feature}' not found")
                 return None
-            have_prob = True
             prob = np.asarray(ds[prob_feature], dtype=float)
             finite = np.isfinite(prob)
-            above = finite & (prob >= float(prob_thresh))
-            below = finite & (prob < float(prob_thresh))
-            sel_mask = above if keep_above_thresh else below
+
+            if probability_filter_enabled:
+                above = finite & (prob >= float(probability_threshold))
+                below = finite & (prob < float(probability_threshold))
+                sel_mask = above if keep_above_threshold else below
+            else:
+                above = np.zeros(n_total, dtype=bool)
+                below = np.zeros(n_total, dtype=bool)
+                sel_mask = np.ones(n_total, dtype=bool)
 
         # Select indices per class
         per_class = []
@@ -1918,18 +1919,16 @@ def export_rtdc_class_examples(
             # Class 0 is reserved for unclassified events. Its probability is
             # normally 0 by design, so applying a high-confidence threshold
             # would make its report section blank even when many events exist.
-            probability_filter_applied = bool(have_prob and c != 0)
+            probability_filter_applied = bool(probability_filter_enabled and c != 0)
 
-            if have_prob:
-                n_above = int((in_class & above).sum())
-                n_below = int((in_class & below).sum())
-            else:
-                n_above = n_in_class
-                n_below = 0
-
-            class_selection_mask = sel_mask if probability_filter_applied else np.ones(n_total, dtype=bool)
+            class_selection_mask = (
+                sel_mask
+                if probability_filter_applied
+                else np.ones(n_total, dtype=bool)
+            )
             candidates = np.flatnonzero(in_class & class_selection_mask).astype(int)
             n_candidates = int(candidates.size)
+            n_excluded = int(n_in_class - n_candidates)
 
             if n_candidates == 0:
                 chosen = np.array([], dtype=int)
@@ -1950,8 +1949,8 @@ def export_rtdc_class_examples(
                     c=c,
                     cname=str(cname),
                     n_in_class=n_in_class,
-                    n_above=n_above,
-                    n_below=n_below,
+                    n_selected=n_candidates,
+                    n_excluded=n_excluded,
                     probability_filter_applied=probability_filter_applied,
                     chosen=chosen,
                     n_cols=n_cols,
@@ -1968,22 +1967,26 @@ def export_rtdc_class_examples(
             lines = [
                 f"{'Random examples' if randomize else 'Examples'} of images in classes | {rtdc_path.name}",
                 f"N={n_total}",
-                f"classifier='{classifier_name}' | class feature='{class_feature}'"
+                f"classifier='{resolved_classifier_name}' | class feature='{class_feature}'"
                 ]
-            if have_prob:
-                side = ">=" if keep_above_thresh else "<"
+            if probability_filter_enabled:
+                side = ">=" if keep_above_threshold else "<"
                 lines += [
                     f"probability feature='{prob_feature}'",
-                    f"probability threshold: {side} {prob_thresh:g}",
+                    f"probability threshold: {side} {probability_threshold:g}",
                 ]
+            elif have_prob:
+                lines.append(
+                    f"probability feature='{prob_feature}' (filter disabled; all images included)"
+                )
             else:
                 lines.append("probability feature=None (all images included)")
             y = 8
             for ln in lines:
                 draw.text((8, y), ln, font=font_title, fill=0)
                 y += _text_wh(draw, ln, font_title)[1] + 6
-            canvas.save(out_png)
-            return out_png
+            canvas.save(output_png_path)
+            return output_png_path
 
         # Render images & find max H/W
         imgs_by_idx: Dict[int, np.ndarray] = {}
@@ -2024,17 +2027,24 @@ def export_rtdc_class_examples(
         canvas_w = (max_cols * tile_w) + ((max_cols - 1) * hgap_images_px) + (2 * outer_pad_x)
 
         # Global title text
-        if have_prob:
-            side = ">=" if keep_above_thresh else "<"
+        if probability_filter_enabled:
+            side = ">=" if keep_above_threshold else "<"
             title = (
                 f"{'Random examples' if randomize else 'Examples'} of images in classes | {rtdc_path.name}"
-                f" | N={n_total} | classifier='{classifier_name}' | class feature='{class_feature}' | "
+                f" | N={n_total} | classifier='{resolved_classifier_name}' | class feature='{class_feature}' | "
                 f"probability feature='{prob_feature}' | probability threshold for classified classes: "
-                f"{side} {prob_thresh:g} | class 0 included without probability filtering"
+                f"{side} {probability_threshold:g} | class 0 included without probability filtering"
+            )
+        elif have_prob:
+            title = (
+                f"{'Random examples' if randomize else 'Examples'} of images in classes | {rtdc_path.name}"
+                f" | N={n_total} | classifier='{resolved_classifier_name}' | class feature='{class_feature}' | "
+                f"probability feature='{prob_feature}' | probability filter disabled"
             )
         else:
             title = (
-                f"{rtdc_path.name} | N={n_total} | classifier='{classifier_name}' | "
+                f"{'Random examples' if randomize else 'Examples'} of images in classes | {rtdc_path.name}"
+                f" | N={n_total} | classifier='{resolved_classifier_name}' | "
                 f"class feature='{class_feature}' | probability feature=None (all images included)"
             )
 
@@ -2054,23 +2064,36 @@ def export_rtdc_class_examples(
         for d in per_class:
             nclass_pct_total = _pct(d["n_in_class"], n_total)
 
-            if have_prob and not d["probability_filter_applied"]:
+            selected_pct = _pct(d["n_selected"], d["n_in_class"])
+
+            if probability_filter_enabled and not d["probability_filter_applied"]:
                 header = (
                     f"{d['cname']} (class={d['c']}) | "
                     f"N_class={d['n_in_class']} ({nclass_pct_total}) | "
+                    f"N_selected={d['n_selected']} ({selected_pct}) | "
                     "probability filter not applied to unclassified events"
+                )
+            elif probability_filter_enabled:
+                comparison_text = ">=" if keep_above_threshold else "<"
+                header = (
+                    f"{d['cname']} (class={d['c']}) | "
+                    f"N_class={d['n_in_class']} ({nclass_pct_total}) | "
+                    f"N_selected={d['n_selected']} ({selected_pct}) | "
+                    f"selection: p {comparison_text} {float(probability_threshold):g} | "
+                    f"N_excluded={d['n_excluded']}"
                 )
             elif have_prob:
                 header = (
                     f"{d['cname']} (class={d['c']}) | "
                     f"N_class={d['n_in_class']} ({nclass_pct_total}) | "
-                    f"above={d['n_above']} ({_pct(d['n_above'], d['n_in_class'])}) | "
-                    f"below={d['n_below']} ({_pct(d['n_below'], d['n_in_class'])})"
+                    f"N_selected={d['n_selected']} ({selected_pct}) | "
+                    "probability filter disabled"
                 )
             else:
                 header = (
                     f"{d['cname']} (class={d['c']}) | "
-                    f"N_class={d['n_in_class']} ({nclass_pct_total}) | prob n/a"
+                    f"N_class={d['n_in_class']} ({nclass_pct_total}) | "
+                    f"N_selected={d['n_selected']} ({selected_pct}) | probability n/a"
                 )
 
             header_lines = _wrap_to_width(ddraw, header, max_px=canvas_w - 2 * outer_pad_x, font=font_class)
@@ -2153,10 +2176,10 @@ def export_rtdc_class_examples(
             y += 2 * vgap_rows_px  # class gap
 
         try:
-            canvas.save(out_png)
-            return out_png
+            canvas.save(output_png_path)
+            return output_png_path
         except Exception as e:
-            print(f"[FAIL] Could not save {out_png}: {e}")
+            print(f"[FAIL] Could not save {output_png_path}: {e}")
             return None
 
 

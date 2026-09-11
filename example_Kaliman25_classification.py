@@ -45,12 +45,12 @@ def find_unclassified_rtdc_files(
 # USER SETTINGS
 # =============================================================================
 
-main_folder_with_rtdc = r"Z:\KK"
+main_folder_with_rtdc = r"Z:\KK\RTDC"
 
 # Analyze only RTDC files ending with this extension.
 # Example input:
 #     2026-04-29_14.57_M001_D003_dcn_b7c.rtdc
-extension_rtdc_to_analyze = "_dcn_b7c"
+extension_rtdc_to_analyze = "_dcn_b9c"
 
 # This is appended to the selected input filename.
 # Example output:

@@ -11,12 +11,13 @@ import rtdc_toolbox
 # SETTINGS
 # =============================================================================
 
-INPUT_FOLDER = Path(r"Z:\KK_D979")
-FILE_SUFFIX = "_dcn_b7c_kaliman25.rtdc"
-ZIP_PATH = Path(r"Z:\KK\Training\filtered_random_images_D979.zip")
+INPUT_FOLDER = Path(r"Z:\KK\RTDC")
+FILE_SUFFIX = "_dcn_b9c_kaliman25.rtdc"
+ZIP_PATH = Path(r"Z:\KK\Training\filtered_random_images.zip")
 
 N_IMAGES_PER_FILE = 200
 
+# for filtering small lymphocytes
 FILTERS = [
     ("userdef3", "==", 21),
     ("area_um", "<", 30),

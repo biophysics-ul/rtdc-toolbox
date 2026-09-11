@@ -27,13 +27,18 @@ import rtdc_toolbox
 # USER SETTINGS
 # =============================================================================
 
-main_folder_with_rtdc = Path(r"Z:\KK")
+main_folder_with_rtdc = Path(r"Z:\KK\RTDC")
 extension_classified_rtdc = "_kaliman25"
-output_folder = Path(r"Z:\KK\QC")
+output_folder = Path(r"Z:\KK\QC_Kaliman25")
 classifier_name = "Kaliman25_WBC"
 
 # Replace existing QC PNGs when True.
 overwrite = True
+
+# Probability filtering used identically by class examples and scatter plots.
+# Kaliman25 has no probability feature, so None disables the filter.
+probability_threshold = None
+keep_above_threshold = True
 
 # -----------------------------------------------------------------------------
 # Stability report settings
@@ -75,11 +80,6 @@ plots_to_plot = [
 ]
 
 n_columns = 2
-
-# Kaliman25 does not produce classification probabilities.
-probability_threshold = None
-probability_comparison = ">="
-
 max_points_per_class = 20_000
 point_size = 13.0
 point_alpha = 0.75
@@ -106,25 +106,26 @@ for i, rtdc_path in enumerate(rtdc_files, start=1):
     current_output_folder = output_folder / relative_parent
     current_output_folder.mkdir(parents=True, exist_ok=True)
 
-    stability_png = current_output_folder / f"{rtdc_path.stem}_stability.png"
-    classes_png = current_output_folder / f"{rtdc_path.stem}_classes.png"
-    scatter_png = current_output_folder / f"{rtdc_path.stem}_scatter.png"
+    # All output paths are fully defined here, outside the toolbox functions.
+    stability_png_path = current_output_folder / f"{rtdc_path.stem}_stability.png"
+    class_examples_png_path = current_output_folder / f"{rtdc_path.stem}_classes.png"
+    scatter_png_path = current_output_folder / f"{rtdc_path.stem}_scatter.png"
 
     # -------------------------------------------------------------------------
     # 1. Stability report
     # -------------------------------------------------------------------------
 
-    if stability_png.exists() and not overwrite:
-        print(f"  [SKIP stability] {stability_png}")
+    if stability_png_path.exists() and not overwrite:
+        print(f"  [SKIP stability] {stability_png_path}")
     else:
         try:
             result_png = rtdc_toolbox.export_rtdc_class_stability_report(
-                path_to_rtdc=rtdc_path,
+                rtdc_path=rtdc_path,
+                output_png_path=stability_png_path,
                 classifier_name=classifier_name,
                 features_to_plot=stability_features_to_plot,
                 n_window=stability_n_window,
                 step=stability_step,
-                out_png=stability_png,
             )
             if result_png is not None:
                 print(f"  Stability report: {result_png}")
@@ -135,25 +136,23 @@ for i, rtdc_path in enumerate(rtdc_files, start=1):
     # 2. Example images from each Kaliman class
     # -------------------------------------------------------------------------
 
-    if classes_png.exists() and not overwrite:
-        print(f"  [SKIP class examples] {classes_png}")
+    if class_examples_png_path.exists() and not overwrite:
+        print(f"  [SKIP class examples] {class_examples_png_path}")
     else:
         try:
-            generated_png = rtdc_toolbox.export_rtdc_class_examples(
-                path_to_rtdc=rtdc_path,
+            result_png = rtdc_toolbox.export_rtdc_class_examples(
+                rtdc_path=rtdc_path,
+                output_png_path=class_examples_png_path,
                 classifier_name=classifier_name,
-                report_ext="_classes",
                 N_img=class_examples_N_img,
                 preprocessing_function=rtdc_toolbox.preprocess_rtdc_image,
                 randomize=class_examples_randomize,
+                probability_threshold=probability_threshold,
+                keep_above_threshold=keep_above_threshold,
                 n_rows=class_examples_n_rows,
             )
-
-            if generated_png is not None:
-                generated_png = Path(generated_png)
-                if generated_png.resolve() != classes_png.resolve():
-                    generated_png.replace(classes_png)
-                print(f"  Class examples: {classes_png}")
+            if result_png is not None:
+                print(f"  Class examples: {result_png}")
         except Exception as exc:
             print(f"  [ERROR class examples] {exc}")
 
@@ -161,19 +160,19 @@ for i, rtdc_path in enumerate(rtdc_files, start=1):
     # 3. Class-colored scatter plots
     # -------------------------------------------------------------------------
 
-    if scatter_png.exists() and not overwrite:
-        print(f"  [SKIP scatter] {scatter_png}")
+    if scatter_png_path.exists() and not overwrite:
+        print(f"  [SKIP scatter] {scatter_png_path}")
     else:
         try:
             result_png = rtdc_toolbox.export_rtdc_class_scatter_plots(
-                path_to_rtdc=rtdc_path,
+                rtdc_path=rtdc_path,
+                output_png_path=scatter_png_path,
                 classifier_name=classifier_name,
                 classes_to_plot=classes_to_plot,
                 plots_to_plot=plots_to_plot,
                 n_columns=n_columns,
-                out_png=scatter_png,
                 probability_threshold=probability_threshold,
-                probability_comparison=probability_comparison,
+                keep_above_threshold=keep_above_threshold,
                 max_points_per_class=max_points_per_class,
                 point_size=point_size,
                 point_alpha=point_alpha,

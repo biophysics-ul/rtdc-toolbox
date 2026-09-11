@@ -37,7 +37,7 @@ The repository comprises two modules, one utility, and several example scripts d
 * `example_make_QC_plots_images.py` — creates quality-control reports for image-classified RT-DC files. It generates acquisition/class stability plots, representative class images, and class-colored scatter plots.
 * `example_make_QC_plots_Kaliman25.py` — creates the corresponding quality-control reports for Kaliman25-classified WBC data.
 * `example_export_random_images_by_class.py` — an example script for exporting random images from classified RT-DC files; useful for inspecting and iteratively improving image training sets.
-* `example_export_random_filtered_images.py` — exports random preprocessed images from multiple RT-DC files into one ZIP archive after applying user-defined filters to arbitrary RT-DC features (for example `userdef3 == 21` and `area_um < 30`).
+* `example_export_random_filtered_images.py` — exports random preprocessed images from multiple RT-DC files into one ZIP archive after applying user-defined filters to arbitrary RT-DC features (for example `userdef3 == 21` and `area_um < 30`); also useful for inspecting and iteratively improving image training sets.
 
 
 
@@ -203,7 +203,7 @@ example_make_QC_plots_images.py
 for image-classified RT-DC files, or:
 
 ```text
-example_make_QC_plots_kaliman.py
+example_make_QC_plots_kaliman25.py
 ```
 
 for Kaliman25-classified files.
@@ -324,7 +324,7 @@ Creates a plot showing how class percentages and selected RT-DC measurements cha
 
 `export_rtdc_class_examples(...)`
 
-Creates an image containing representative examples from each predicted class.
+Creates an image containing representative examples from each predicted class. It supports optional probability filtering using `probability_threshold` and `keep_above_threshold`.
 
 `export_rtdc_class_scatter_plots(...)`
 

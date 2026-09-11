@@ -10,10 +10,10 @@ import rtdc_toolbox
 # USER SETTINGS
 # =============================================================================
 
-INPUT_FOLDER = Path(r"Z:\KK")
-EXPORT_FOLDER = Path(r"Z:\KK\Training\Set_2026_08_25_Above")
+INPUT_FOLDER = Path(r"Z:\KK\RTDC")
+EXPORT_FOLDER = Path(r"Z:\KK\Training\Export")
 
-FILE_SUFFIX = "_dcn_b7c.rtdc"
+FILE_SUFFIX = "_dcn_b9c.rtdc"
 CLASSIFIER_NAME = "default"
 
 N_IMAGES_PER_CLASS = 200
